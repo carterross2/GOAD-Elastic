@@ -29,7 +29,7 @@
   uri:
     url: "https://localhost:9200/_cluster/health"
     user: "elastic"
-    password: "{{ elastic_password }}"
+    password: "elastic"
     force_basic_auth: yes
     validate_certs: no
   register: es_health
@@ -37,9 +37,45 @@
   retries: 30
   delay: 10
 
-- name: Create Windows Security index pattern
+- name: Wait additional time for Kibana API to be ready
+  wait_for:
+    port: "{{ kibana_port }}"
+    host: "localhost"
+    delay: 30
+
+- name: Check if Kibana API is responsive
   uri:
-    url: "http://localhost:{{ kibana_port }}/api/saved_objects/index-pattern/windows-*"
+    url: "http://localhost:{{ kibana_port }}/api/status"
+    method: GET
+  register: kibana_status
+  until: kibana_status.status == 200
+  retries: 20
+  delay: 15
+
+- name: Import Windows Security Dashboards and Index Patterns
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/saved_objects/_import"
+    method: POST
+    headers:
+      kbn-xsrf: true
+      Content-Type: application/json
+    body: "{{ lookup('file', 'windows_dashboards.json') }}"
+    body_format: json
+  register: dashboard_import_result
+  failed_when: false
+  retries: 3
+  delay: 10
+
+- name: Display dashboard import status
+  debug:
+    msg: 
+      - "Dashboard import result: {{ dashboard_import_result.json.success | default('unknown') }}"
+      - "Errors: {{ dashboard_import_result.json.errors | default('none') }}"
+  when: dashboard_import_result.json is defined
+
+- name: Create default index pattern if import failed
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/saved_objects/index-pattern/windows-security-default"
     method: POST
     headers:
       Content-Type: "application/json"
@@ -47,58 +83,36 @@
     body_format: json
     body:
       attributes:
-        title: "windows-*"
+        title: "windows-*,logs-windows.*"
         timeFieldName: "@timestamp"
-        fields: |
-          [
-            {"name":"@timestamp","type":"date","searchable":true,"aggregatable":true},
-            {"name":"event.action","type":"string","searchable":true,"aggregatable":true},
-            {"name":"event.code","type":"string","searchable":true,"aggregatable":true},
-            {"name":"event.id","type":"string","searchable":true,"aggregatable":true},
-            {"name":"host.hostname","type":"string","searchable":true,"aggregatable":true},
-            {"name":"host.name","type":"string","searchable":true,"aggregatable":true},
-            {"name":"process.name","type":"string","searchable":true,"aggregatable":true},
-            {"name":"process.pid","type":"number","searchable":true,"aggregatable":true},
-            {"name":"user.name","type":"string","searchable":true,"aggregatable":true},
-            {"name":"user.domain","type":"string","searchable":true,"aggregatable":true},
-            {"name":"winlog.channel","type":"string","searchable":true,"aggregatable":true},
-            {"name":"winlog.event_id","type":"string","searchable":true,"aggregatable":true}
-          ]
-  register: index_pattern_result
+  register: fallback_index_result
+  failed_when: false
+  when: dashboard_import_result.json.success is not defined or not dashboard_import_result.json.success
+
+- name: Set default index pattern
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/kibana/settings/defaultIndex"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+    body_format: json
+    body:
+      value: "windows-security-index-pattern"
+  register: default_index_result
   failed_when: false
 
-- name: Create Windows Security Dashboard
+- name: Enable Elastic Security app (if available)
   uri:
-    url: "http://localhost:{{ kibana_port }}/api/saved_objects/dashboard/windows-security-overview"
+    url: "http://localhost:{{ kibana_port }}/api/security_solution/sourcerer"
     method: POST
     headers:
       Content-Type: "application/json"
       kbn-xsrf: true
     body_format: json
     body:
-      attributes:
-        title: "Windows Security Overview"
-        description: "Overview of Windows security events from domain machines"
-        panelsJSON: |
-          [
-            {
-              "version": "8.11.0",
-              "type": "visualization",
-              "gridData": {"x": 0, "y": 0, "w": 24, "h": 15, "i": "1"},
-              "panelIndex": "1",
-              "embeddableConfig": {},
-              "panelRefName": "panel_1"
-            }
-          ]
-        optionsJSON: |
-          {
-            "useMargins": true,
-            "syncColors": false,
-            "hidePanelTitles": false
-          }
-        timeRestore: false
-        version: 1
-  register: dashboard_result
+      patternList: ["windows-*", "logs-windows.*", "logs-endpoint.*", "security-alerts-*"]
+  register: security_app_result
   failed_when: false
 
 - name: Display access information
@@ -110,9 +124,15 @@
       - "Kibana URL: http://{{ ansible_default_ipv4.address }}:{{ kibana_port }}"
       - "Elasticsearch URL: https://{{ ansible_default_ipv4.address }}:9200"
       - "Username: elastic"
-      - "Password: {{ elastic_password }}"
+      - "Password: elastic"
       - "==============================================="
-      - "Default Dashboards:"
-      - "- Windows Security Overview"
-      - "- Navigate to Management > Stack Management > Index Patterns to verify 'windows-*' pattern"
+      - "Available Dashboards:"
+      - "- Windows Security Events Dashboard"
+      - "- Active Directory Authentication Dashboard" 
+      - "- Endpoint Security Overview Dashboard"
+      - "- Network Security Dashboard"
+      - "- Attack Timeline Dashboard"
+      - "==============================================="
+      - "Navigate to Analytics > Dashboard to access pre-built dashboards"
+      - "Navigate to Analytics > Discover to explore raw log data"
       - "==============================================="

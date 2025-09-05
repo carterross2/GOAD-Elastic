@@ -1,7 +1,7 @@
 server.port: {{ kibana_port }}
 server.host: "{{ kibana_host }}"
 elasticsearch.hosts: ["https://{{ elasticsearch_host }}:9200"]
-elasticsearch.username: "kibana_system"
+elasticsearch.username: "kibana"
 elasticsearch.password: "{{ kibana_admin_password }}"
 elasticsearch.ssl.verificationMode: none
 

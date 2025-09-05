@@ -1,0 +1,92 @@
+Vagrant.configure("2") do |config|
+  config.vm.define "{{lab_name}}-ELASTIC" do |elastic|
+    elastic.vm.box = "ubuntu/jammy64"  # Ubuntu 22.04
+    elastic.vm.hostname = "{{lab_name}}-ELASTIC"
+    
+    # Network configuration for VirtualBox host-only
+    elastic.vm.network "private_network", 
+      ip: "{{ip_range}}.52",
+      virtualbox__intnet: "{{lab_name}}"
+    
+    # Port forwarding for external access
+    elastic.vm.network "forwarded_port", 
+      guest: 5601, 
+      host: 5601,
+      protocol: "tcp"
+    
+    elastic.vm.network "forwarded_port", 
+      guest: 9200, 
+      host: 9200,
+      protocol: "tcp"
+      
+    elastic.vm.network "forwarded_port", 
+      guest: 5044, 
+      host: 5044,
+      protocol: "tcp"
+    
+    # VirtualBox specific settings
+    elastic.vm.provider "virtualbox" do |vb|
+      vb.name = "{{lab_name}}-ELASTIC"
+      vb.gui = false
+      vb.memory = 12288  # 12GB RAM
+      vb.cpus = 4        # 4 CPU cores
+      
+      # Enable nested virtualization if needed
+      vb.customize ["modifyvm", :id, "--nested-hw-virt", "on"]
+      
+      # Optimize performance
+      vb.customize ["modifyvm", :id, "--ioapic", "on"]
+      vb.customize ["modifyvm", :id, "--pae", "on"]
+      vb.customize ["modifyvm", :id, "--largepages", "on"]
+      vb.customize ["modifyvm", :id, "--vtxvpid", "on"]
+    end
+    
+    # SSH configuration
+    elastic.vm.ssh.insert_key = false
+    elastic.vm.ssh.private_key_path = ["~/.vagrant.d/insecure_private_key"]
+    
+    # Provisioning
+    elastic.vm.provision "shell", inline: <<-SHELL
+      # Update system
+      apt-get update
+      apt-get upgrade -y
+      
+      # Install basic utilities
+      apt-get install -y curl wget gnupg2 software-properties-common apt-transport-https
+      
+      # Set timezone
+      timedatectl set-timezone UTC
+      
+      # Increase virtual memory for Elasticsearch
+      echo 'vm.max_map_count=262144' >> /etc/sysctl.conf
+      sysctl -p
+      
+      # Create elastic user if it doesn't exist
+      if ! id "elastic" &>/dev/null; then
+          useradd -m -s /bin/bash elastic
+          echo "elastic:elastic" | chpasswd
+          usermod -aG sudo elastic
+      fi
+      
+      # Configure SSH for ansible
+      sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+      sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+      systemctl restart ssh
+      
+      # Set hostname resolution
+      echo "127.0.0.1 {{lab_name}}-ELASTIC" >> /etc/hosts
+      
+      # Create directories for Elastic Stack
+      mkdir -p /var/lib/elasticsearch
+      mkdir -p /var/log/elasticsearch
+      mkdir -p /etc/elasticsearch
+      mkdir -p /etc/kibana
+      mkdir -p /etc/logstash
+      
+      echo "Elastic Stack VM provisioning complete"
+    SHELL
+    
+    # Sync folders if needed for custom configurations
+    elastic.vm.synced_folder ".", "/vagrant", disabled: true
+  end
+end

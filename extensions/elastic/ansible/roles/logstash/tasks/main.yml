@@ -149,7 +149,7 @@
       xpack.monitoring.enabled: true
       xpack.monitoring.elasticsearch.hosts: ["https://localhost:9200"]
       xpack.monitoring.elasticsearch.username: elastic
-      xpack.monitoring.elasticsearch.password: changeme
+      xpack.monitoring.elasticsearch.password: elastic
       xpack.monitoring.elasticsearch.ssl.verification_mode: none
     dest: /etc/logstash/logstash.yml
     owner: root
