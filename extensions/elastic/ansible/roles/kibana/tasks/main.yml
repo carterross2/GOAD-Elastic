@@ -27,21 +27,30 @@
 
 - name: Wait for Elasticsearch to be ready
   uri:
-    url: "https://localhost:9200/_cluster/health"
+    url: "http://localhost:9200/_cluster/health"
     user: "elastic"
     password: "elastic"
     force_basic_auth: yes
-    validate_certs: no
   register: es_health
   until: es_health.json.status in ["yellow", "green"]
-  retries: 30
-  delay: 10
+  retries: 20
+  delay: 15
 
 - name: Wait additional time for Kibana API to be ready
   wait_for:
     port: "{{ kibana_port }}"
     host: "localhost"
-    delay: 30
+    delay: 60
+    timeout: 300
+
+- name: Verify Kibana is fully operational
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/status"
+    method: GET
+  register: kibana_status
+  until: kibana_status.status == 200
+  retries: 15
+  delay: 20
 
 - name: Check if Kibana API is responsive
   uri:
@@ -62,9 +71,9 @@
     body: "{{ lookup('file', 'windows_dashboards.json') }}"
     body_format: json
   register: dashboard_import_result
-  failed_when: false
+  until: dashboard_import_result.status in [200, 409]  # 409 = conflict (already exists)
   retries: 3
-  delay: 10
+  delay: 15
 
 - name: Display dashboard import status
   debug:
@@ -115,16 +124,26 @@
   register: security_app_result
   failed_when: false
 
-- name: Display access information
+- name: Verify Kibana health
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/status"
+    method: GET
+  register: kibana_final_health
+
+- name: Display comprehensive access information
   debug:
     msg:
       - "==============================================="
       - "Elastic Stack Installation Complete!"
       - "==============================================="
       - "Kibana URL: http://{{ ansible_default_ipv4.address }}:{{ kibana_port }}"
-      - "Elasticsearch URL: https://{{ ansible_default_ipv4.address }}:9200"
+      - "Elasticsearch URL: http://{{ ansible_default_ipv4.address }}:9200"
       - "Username: elastic"
       - "Password: elastic"
+      - "==============================================="
+      - "Service Status:"
+      - "- Elasticsearch: {{ final_es_health.json.status | default('Unknown') }}"
+      - "- Kibana: {{ 'Healthy' if kibana_final_health.status == 200 else 'Issue detected' }}"
       - "==============================================="
       - "Available Dashboards:"
       - "- Windows Security Events Dashboard"

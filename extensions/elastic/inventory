@@ -1,5 +1,5 @@
 [default]
-elastic ansible_host={{ip_range}}.52 ansible_connection=ssh ansible_ssh_common_args='-o StrictHostKeyChecking=no' ansible_user=vagrant ansible_ssh_private_key_file=~/.vagrant.d/insecure_private_key
+elastic ansible_host={{ip_range}}.52 ansible_connection=ssh ansible_ssh_common_args='-o StrictHostKeyChecking=no'
 
 [extensions]
 elastic
@@ -14,6 +14,6 @@ domain
 [elastic_agents_windows:children]
 domain
 
-; Variables for VirtualBox networking
+; Variables for all hosts
 [all:vars]
 ansible_python_interpreter=/usr/bin/python3

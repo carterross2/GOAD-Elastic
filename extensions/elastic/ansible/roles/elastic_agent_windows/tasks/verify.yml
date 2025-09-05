@@ -1,0 +1,15 @@
+- name: Check Elastic Agent service status
+  win_service:
+    name: "Elastic Agent"
+  register: agent_service_status
+
+- name: Verify Elastic Agent is running
+  win_command: '"C:\Program Files\Elastic\Agent\elastic-agent.exe" status'
+  register: agent_status_output
+  failed_when: false
+
+- name: Display Elastic Agent status
+  debug:
+    msg:
+      - "Agent Service Status: {{ agent_service_status.state }}"
+      - "Agent Status Output: {{ agent_status_output.stdout | default('Unable to retrieve') }}"

@@ -1,9 +1,8 @@
 server.port: {{ kibana_port }}
 server.host: "{{ kibana_host }}"
-elasticsearch.hosts: ["https://{{ elasticsearch_host }}:9200"]
-elasticsearch.username: "kibana"
-elasticsearch.password: "{{ kibana_admin_password }}"
-elasticsearch.ssl.verificationMode: none
+elasticsearch.hosts: ["http://{{ elasticsearch_host }}:9200"]
+elasticsearch.username: "elastic"
+elasticsearch.password: "elastic"
 
 # Fleet settings
 xpack.fleet.agents.elasticsearch.hosts: ["https://{{ elasticsearch_host }}:9200"]

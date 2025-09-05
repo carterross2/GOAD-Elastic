@@ -31,8 +31,8 @@
           hosts: 
             - https://{{ elastic_server_host }}:9200
           username: elastic
-          password: changeme
-          ssl.verification_mode: none
+          password: elastic
+          ssl.enabled: false
 
       inputs:
         - type: system/metrics
@@ -135,4 +135,8 @@
 - name: Display installation status
   debug:
     msg: "Elastic Agent installed and started on {{ inventory_hostname }}"
+  when: agent_install.changed
+
+- name: Verify agent installation
+  include_tasks: verify.yml
   when: agent_install.changed

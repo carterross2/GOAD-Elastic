@@ -1,11 +1,10 @@
 - name: Install Elastic Security integration templates
   uri:
-    url: "https://localhost:{{ elasticsearch_port }}/_index_template/security-events"
+    url: "http://localhost:{{ elasticsearch_port }}/_index_template/security-events"
     method: PUT
     user: "elastic"
     password: "{{ elastic_password }}"
     force_basic_auth: yes
-    validate_certs: no
     body_format: json
     body:
       index_patterns: ["logs-endpoint.events.*", "logs-windows.*", "logs-system.*"]
@@ -109,17 +108,17 @@
                   type: object
                   enabled: true
   register: security_template_result
-  retries: 3
-  delay: 5
+  until: security_template_result.status == 200
+  retries: 5
+  delay: 10
 
 - name: Configure Windows Event Log retention policy
   uri:
-    url: "https://localhost:{{ elasticsearch_port }}/_ilm/policy/windows-logs-policy"
+    url: "http://localhost:{{ elasticsearch_port }}/_ilm/policy/windows-logs-policy"
     method: PUT
     user: "elastic"
     password: "{{ elastic_password }}"
     force_basic_auth: yes
-    validate_certs: no
     body_format: json
     body:
       policy:
@@ -142,3 +141,6 @@
           delete:
             min_age: "90d"
   register: ilm_policy_result
+  until: ilm_policy_result.status == 200
+  retries: 5
+  delay: 10

@@ -101,8 +101,6 @@
           hosts => ["https://localhost:9200"]
           user => "elastic"
           password => "{{ elastic_password }}"
-          ssl => true
-          ssl_certificate_verification => false
           index => "%{[event][dataset]}-%{+YYYY.MM.dd}"
         }
         
@@ -112,8 +110,6 @@
             hosts => ["https://localhost:9200"]
             user => "elastic"
             password => "{{ elastic_password }}"
-            ssl => true
-            ssl_certificate_verification => false
             index => "security-alerts-%{+YYYY.MM.dd}"
           }
         }

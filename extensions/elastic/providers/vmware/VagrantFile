@@ -1,0 +1,16 @@
+boxes.append(
+  {
+    :name => "{{lab_name}}-ELASTIC",
+    :ip => "{{ip_range}}.52",
+    :box => "bento/ubuntu-22.04",
+    :os => "linux",
+    :cpus => 4,
+    :mem => 12288,
+    :forwarded_port => [
+      { :guest => 5601, :host => 5601 },
+      { :guest => 9200, :host => 9200 },
+      { :guest => 5044, :host => 5044 },
+      { :guest => 22, :host => 2211, :id => "ssh" }
+    ]
+  }
+)

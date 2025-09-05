@@ -53,22 +53,33 @@
     port: "{{ elasticsearch_port }}"
     host: "localhost"
     delay: 30
+    timeout: 300
+
+- name: Wait for Elasticsearch cluster to be ready
+  uri:
+    url: "http://localhost:{{ elasticsearch_port }}/_cluster/health?wait_for_status=yellow&timeout=60s"
+    method: GET
+  register: es_health
+  until: es_health.status == 200
+  retries: 10
+  delay: 15
 
 - name: Reset elastic user password
   shell: |
     echo "{{ elastic_password }}" | /usr/share/elasticsearch/bin/elasticsearch-reset-password -u elastic -i
   register: elastic_password_reset
+  until: elastic_password_reset.rc == 0
+  retries: 3
+  delay: 10
   changed_when: elastic_password_reset.rc == 0
-  failed_when: false
 
 - name: Create Windows security index template
   uri:
-    url: "https://localhost:{{ elasticsearch_port }}/_index_template/windows-security"
+    url: "http://localhost:{{ elasticsearch_port }}/_index_template/windows-security"
     method: PUT
     user: "elastic"
     password: "{{ elastic_password }}"
     force_basic_auth: yes
-    validate_certs: no
     body_format: json
     body:
       index_patterns: ["windows-*", "endpoint-*", "logs-*"]
@@ -144,9 +155,27 @@
                 record_id:
                   type: keyword
   register: index_template_result
-  failed_when: false
-  delay: 10
+  until: index_template_result.status == 200
   retries: 5
+  delay: 10
+
+- name: Verify Elasticsearch cluster health
+  uri:
+    url: "http://localhost:{{ elasticsearch_port }}/_cluster/health"
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+  register: final_es_health
+  until: final_es_health.json.status in ["yellow", "green"]
+  retries: 10
+  delay: 10
+
+- name: Display Elasticsearch cluster status
+  debug:
+    msg:
+      - "Elasticsearch Status: {{ final_es_health.json.status }}"
+      - "Number of nodes: {{ final_es_health.json.number_of_nodes }}"
+      - "Active shards: {{ final_es_health.json.active_shards }}"
 
 - name: Configure Elasticsearch security features
   include_tasks: configure_security.yml

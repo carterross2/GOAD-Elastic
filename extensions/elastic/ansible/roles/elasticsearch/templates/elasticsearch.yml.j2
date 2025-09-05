@@ -12,7 +12,7 @@ xpack.security.enrollment.enabled: true
 
 # Transport security (node-to-node communication)
 xpack.security.transport.ssl:
-  enabled: true
+  enabled: false
   verification_mode: certificate
   client_authentication: required
   keystore.path: certs/transport.p12
@@ -20,7 +20,7 @@ xpack.security.transport.ssl:
 
 # HTTP security (client connections)
 xpack.security.http.ssl:
-  enabled: true
+  enabled: false
   verification_mode: certificate
   keystore.path: certs/http.p12
 
