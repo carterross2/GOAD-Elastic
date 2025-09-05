@@ -1,0 +1,8 @@
+elasticsearch_version: "8.11.0"
+elasticsearch_port: 9200
+elasticsearch_cluster_name: "goad-elastic-cluster"
+elasticsearch_node_name: "goad-node-1"
+elasticsearch_data_path: "/var/lib/elasticsearch"
+elasticsearch_log_path: "/var/log/elasticsearch"
+elasticsearch_heap_size: "4g"
+elastic_password: "elastic_password"

@@ -1,0 +1,118 @@
+- name: Install Kibana
+  apt:
+    name: "kibana={{ kibana_version }}"
+    state: present
+  notify: restart kibana
+
+- name: Create kibana configuration
+  template:
+    src: kibana.yml.j2
+    dest: /etc/kibana/kibana.yml
+    owner: root
+    group: kibana
+    mode: '0660'
+  notify: restart kibana
+
+- name: Start and enable Kibana
+  systemd:
+    name: kibana
+    state: started
+    enabled: yes
+
+- name: Wait for Kibana to start
+  wait_for:
+    port: "{{ kibana_port }}"
+    host: "localhost"
+    delay: 60
+
+- name: Wait for Elasticsearch to be ready
+  uri:
+    url: "https://localhost:9200/_cluster/health"
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+    validate_certs: no
+  register: es_health
+  until: es_health.json.status in ["yellow", "green"]
+  retries: 30
+  delay: 10
+
+- name: Create Windows Security index pattern
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/saved_objects/index-pattern/windows-*"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+    body_format: json
+    body:
+      attributes:
+        title: "windows-*"
+        timeFieldName: "@timestamp"
+        fields: |
+          [
+            {"name":"@timestamp","type":"date","searchable":true,"aggregatable":true},
+            {"name":"event.action","type":"string","searchable":true,"aggregatable":true},
+            {"name":"event.code","type":"string","searchable":true,"aggregatable":true},
+            {"name":"event.id","type":"string","searchable":true,"aggregatable":true},
+            {"name":"host.hostname","type":"string","searchable":true,"aggregatable":true},
+            {"name":"host.name","type":"string","searchable":true,"aggregatable":true},
+            {"name":"process.name","type":"string","searchable":true,"aggregatable":true},
+            {"name":"process.pid","type":"number","searchable":true,"aggregatable":true},
+            {"name":"user.name","type":"string","searchable":true,"aggregatable":true},
+            {"name":"user.domain","type":"string","searchable":true,"aggregatable":true},
+            {"name":"winlog.channel","type":"string","searchable":true,"aggregatable":true},
+            {"name":"winlog.event_id","type":"string","searchable":true,"aggregatable":true}
+          ]
+  register: index_pattern_result
+  failed_when: false
+
+- name: Create Windows Security Dashboard
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/saved_objects/dashboard/windows-security-overview"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+    body_format: json
+    body:
+      attributes:
+        title: "Windows Security Overview"
+        description: "Overview of Windows security events from domain machines"
+        panelsJSON: |
+          [
+            {
+              "version": "8.11.0",
+              "type": "visualization",
+              "gridData": {"x": 0, "y": 0, "w": 24, "h": 15, "i": "1"},
+              "panelIndex": "1",
+              "embeddableConfig": {},
+              "panelRefName": "panel_1"
+            }
+          ]
+        optionsJSON: |
+          {
+            "useMargins": true,
+            "syncColors": false,
+            "hidePanelTitles": false
+          }
+        timeRestore: false
+        version: 1
+  register: dashboard_result
+  failed_when: false
+
+- name: Display access information
+  debug:
+    msg:
+      - "==============================================="
+      - "Elastic Stack Installation Complete!"
+      - "==============================================="
+      - "Kibana URL: http://{{ ansible_default_ipv4.address }}:{{ kibana_port }}"
+      - "Elasticsearch URL: https://{{ ansible_default_ipv4.address }}:9200"
+      - "Username: elastic"
+      - "Password: {{ elastic_password }}"
+      - "==============================================="
+      - "Default Dashboards:"
+      - "- Windows Security Overview"
+      - "- Navigate to Management > Stack Management > Index Patterns to verify 'windows-*' pattern"
+      - "==============================================="

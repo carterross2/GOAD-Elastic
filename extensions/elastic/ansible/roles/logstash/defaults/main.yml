@@ -1,0 +1,2 @@
+logstash_version: "8.11.0"
+logstash_port: 5044

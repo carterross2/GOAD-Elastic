@@ -1,0 +1,152 @@
+- name: Update apt cache
+  apt:
+    update_cache: yes
+
+- name: Install Java 11
+  apt:
+    name: openjdk-11-jdk
+    state: present
+
+- name: Add Elastic repository key
+  apt_key:
+    url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+    state: present
+
+- name: Add Elastic repository
+  apt_repository:
+    repo: "deb https://artifacts.elastic.co/packages/8.x/apt stable main"
+    state: present
+
+- name: Install Elasticsearch
+  apt:
+    name: "elasticsearch={{ elasticsearch_version }}"
+    state: present
+  notify: restart elasticsearch
+
+- name: Create elasticsearch configuration
+  template:
+    src: elasticsearch.yml.j2
+    dest: /etc/elasticsearch/elasticsearch.yml
+    owner: root
+    group: elasticsearch
+    mode: '0660'
+  notify: restart elasticsearch
+
+- name: Set JVM heap size
+  lineinfile:
+    path: /etc/elasticsearch/jvm.options
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+  loop:
+    - { regexp: '^-Xms', line: "-Xms{{ elasticsearch_heap_size }}" }
+    - { regexp: '^-Xmx', line: "-Xmx{{ elasticsearch_heap_size }}" }
+  notify: restart elasticsearch
+
+- name: Start and enable Elasticsearch
+  systemd:
+    name: elasticsearch
+    state: started
+    enabled: yes
+
+- name: Wait for Elasticsearch to start
+  wait_for:
+    port: "{{ elasticsearch_port }}"
+    host: "localhost"
+    delay: 30
+
+- name: Reset elastic user password
+  shell: |
+    echo "{{ elastic_password }}" | /usr/share/elasticsearch/bin/elasticsearch-reset-password -u elastic -i
+  register: elastic_password_reset
+  changed_when: elastic_password_reset.rc == 0
+  failed_when: false
+
+- name: Create Windows security index template
+  uri:
+    url: "https://localhost:{{ elasticsearch_port }}/_index_template/windows-security"
+    method: PUT
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+    validate_certs: no
+    body_format: json
+    body:
+      index_patterns: ["windows-*", "endpoint-*", "logs-*"]
+      template:
+        settings:
+          number_of_shards: 1
+          number_of_replicas: 0
+          index.refresh_interval: "5s"
+        mappings:
+          properties:
+            "@timestamp":
+              type: date
+            event:
+              properties:
+                action:
+                  type: keyword
+                category:
+                  type: keyword
+                code:
+                  type: keyword
+                dataset:
+                  type: keyword
+                id:
+                  type: keyword
+                kind:
+                  type: keyword
+                module:
+                  type: keyword
+                outcome:
+                  type: keyword
+                provider:
+                  type: keyword
+                type:
+                  type: keyword
+            host:
+              properties:
+                hostname:
+                  type: keyword
+                name:
+                  type: keyword
+                os:
+                  properties:
+                    family:
+                      type: keyword
+                    name:
+                      type: keyword
+                    version:
+                      type: keyword
+            process:
+              properties:
+                name:
+                  type: keyword
+                pid:
+                  type: long
+                executable:
+                  type: keyword
+                command_line:
+                  type: text
+            user:
+              properties:
+                name:
+                  type: keyword
+                domain:
+                  type: keyword
+            winlog:
+              properties:
+                channel:
+                  type: keyword
+                event_id:
+                  type: keyword
+                provider_name:
+                  type: keyword
+                record_id:
+                  type: keyword
+  register: index_template_result
+  failed_when: false
+  delay: 10
+  retries: 5
+
+- name: Configure Elasticsearch security features
+  include_tasks: configure_security.yml

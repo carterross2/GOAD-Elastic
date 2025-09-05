@@ -1,0 +1,138 @@
+- name: Check if Elastic Agent service exists
+  win_service:
+    name: "Elastic Agent"
+  register: elastic_agent_service
+  failed_when: false
+
+- name: Create installation directory
+  win_file:
+    path: "{{ elastic_install_location }}"
+    state: directory
+
+- name: Download Elastic Agent
+  win_get_url:
+    url: "{{ elastic_agent_download_url }}"
+    dest: "{{ elastic_install_location }}\\elastic-agent.zip"
+  register: agent_download
+  when: not (elastic_agent_service.exists | default(false))
+
+- name: Extract Elastic Agent
+  win_unzip:
+    src: "{{ elastic_install_location }}\\elastic-agent.zip"
+    dest: "{{ elastic_install_location }}"
+  when: agent_download.changed
+
+- name: Create Elastic Agent configuration
+  win_copy:
+    content: |
+      outputs:
+        default:
+          type: elasticsearch
+          hosts: 
+            - https://{{ elastic_server_host }}:9200
+          username: elastic
+          password: changeme
+          ssl.verification_mode: none
+
+      inputs:
+        - type: system/metrics
+          data_stream.namespace: default
+          use_output: default
+          streams:
+            - metricset: cpu
+              data_stream.dataset: system.cpu
+            - metricset: memory
+              data_stream.dataset: system.memory
+            - metricset: network
+              data_stream.dataset: system.network
+            - metricset: filesystem
+              data_stream.dataset: system.filesystem
+
+        - type: winlog
+          data_stream.namespace: default
+          use_output: default
+          streams:
+            - name: windows-system
+              data_stream.dataset: windows.system
+              event_id: 1-999999
+              channel: System
+            - name: windows-application
+              data_stream.dataset: windows.application
+              event_id: 1-999999
+              channel: Application
+            - name: windows-security
+              data_stream.dataset: windows.security
+              event_id: 1-999999
+              channel: Security
+            - name: windows-setup
+              data_stream.dataset: windows.setup
+              event_id: 1-999999
+              channel: Setup
+
+        - type: endpoint
+          data_stream.namespace: default
+          use_output: default
+          artifact_manifest:
+            schema_version: v1
+            manifest_version: 1.0.0
+            artifacts:
+              - endpoint-security
+          policy:
+            linux:
+              events:
+                file: true
+                network: true
+                process: true
+            mac:
+              events:
+                file: true
+                network: true
+                process: true  
+            windows:
+              events:
+                dll_and_driver_load: true
+                dns: true
+                file: true
+                network: true
+                process: true
+                registry: true
+                security: true
+              malware:
+                mode: prevent
+              ransomware:
+                mode: prevent
+              memory_protection:
+                mode: prevent
+              behavior_protection:
+                mode: prevent
+
+      agent:
+        download:
+          source_uri: "https://artifacts.elastic.co/downloads/"
+        monitoring:
+          enabled: true
+          use_output: default
+          namespace: default
+          logs: true
+          metrics: true
+    dest: "{{ elastic_install_location }}\\elastic-agent-{{ elastic_agent_version }}-windows-x86_64\\elastic-agent.yml"
+  when: agent_download.changed
+
+- name: Install Elastic Agent as Windows service
+  win_shell: |
+    cd "{{ elastic_install_location }}\\elastic-agent-{{ elastic_agent_version }}-windows-x86_64"
+    .\\elastic-agent.exe install
+  when: agent_download.changed
+  register: agent_install
+
+- name: Start Elastic Agent service
+  win_service:
+    name: "Elastic Agent"
+    state: started
+    start_mode: auto
+  when: agent_install.changed
+
+- name: Display installation status
+  debug:
+    msg: "Elastic Agent installed and started on {{ inventory_hostname }}"
+  when: agent_install.changed
