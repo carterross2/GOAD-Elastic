@@ -98,7 +98,7 @@
       
       output {
         elasticsearch {
-          hosts => ["https://localhost:9200"]
+          hosts => ["http://localhost:9200"]
           user => "elastic"
           password => "{{ elastic_password }}"
           index => "%{[event][dataset]}-%{+YYYY.MM.dd}"
@@ -107,7 +107,7 @@
         # Also output high severity events to a special index
         if [security_severity] == "critical" or [security_severity] == "high" {
           elasticsearch {
-            hosts => ["https://localhost:9200"]
+            hosts => ["http://localhost:9200"]
             user => "elastic"
             password => "{{ elastic_password }}"
             index => "security-alerts-%{+YYYY.MM.dd}"
@@ -143,7 +143,7 @@
       path.config: /etc/logstash/conf.d/*.conf
       path.logs: /var/log/logstash
       xpack.monitoring.enabled: true
-      xpack.monitoring.elasticsearch.hosts: ["https://localhost:9200"]
+      xpack.monitoring.elasticsearch.hosts: ["http://localhost:9200"]
       xpack.monitoring.elasticsearch.username: elastic
       xpack.monitoring.elasticsearch.password: elastic
       xpack.monitoring.elasticsearch.ssl.verification_mode: none

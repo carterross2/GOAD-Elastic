@@ -4,43 +4,44 @@
 - Description: Add Elastic Stack (Elasticsearch, Kibana, Logstash) EDR server and Elastic Agents on Windows domain computers only
 - Machine name: {{lab_name}}-ELASTIC  
 - Compatible with labs: *
-- Provider: VirtualBox
+- Provider: VirtualBox, VMware, AWS, Azure, Ludus
 
 ## Prerequisites
 
-For VirtualBox setup:
-- Ensure you have sufficient system resources (12GB RAM will be allocated to the Elastic VM)
-- VirtualBox host-only network configured
+- Ensure you have sufficient system resources (12GB RAM will be allocated to the Elastic VM by default)
+- Network connectivity configured for your chosen provider
 - Ubuntu 22.04 template available (will be downloaded automatically)
 
 ## Install
 ```bash
-./goad.sh -t install -l <your_lab> -p virtualbox -e elastic
+./goad.sh -t install -l <your_lab> -p <provider> -e elastic
 ```
 
 ## Configuration
 
 You can customize resource allocation by setting variables before installation:
 
-### Memory Configuration
 ```bash
-# For smaller environments (8GB VM, 2GB heap)
+# For smaller environments (8GB VM, 2.4GB heap)
 export ELASTIC_VM_MEMORY_GB=8
 export ELASTIC_VM_CPUS=2
 
-# For larger environments (16GB VM, 4GB heap) 
+# For larger environments (16GB VM, 4.8GB heap) 
 export ELASTIC_VM_MEMORY_GB=16
 export ELASTIC_VM_CPUS=4
+```
+
+**Default Resources:** 4 CPU cores, 12GB RAM (heap automatically set to 30% of total RAM)
 
 ## Access
 
 ### From Host Machine (Port Forwarding)
 - Kibana Web UI: http://localhost:5601
-- Elasticsearch API: https://localhost:9200
+- Elasticsearch API: http://localhost:9200
 
-### From Lab Network (VirtualBox Host-Only)
-- Kibana Web UI: http://192.168.56.52:5601
-- Elasticsearch API: https://192.168.56.52:9200
+### From Lab Network
+- Kibana Web UI: http://192.168.56.52:5601 (or your configured IP range)
+- Elasticsearch API: http://192.168.56.52:9200
 
 ### Credentials
 - Username: `elastic`
@@ -52,7 +53,7 @@ export ELASTIC_VM_CPUS=4
 - **Elasticsearch 8.11.0**: Log storage, search engine, and analytics
 - **Kibana 8.11.0**: Web-based visualization and dashboard interface
 - **Logstash 8.11.0**: Log processing pipeline with Windows-specific parsing
-- **Elastic Agents**: Deployed on all Windows domain machines only (no Linux agents)
+- **Elastic Agents**: Deployed on all Windows domain machines only
 
 ### Security Monitoring
 - Windows Event Log collection (Security, System, Application, Setup)
@@ -78,48 +79,46 @@ export ELASTIC_VM_CPUS=4
 
 ## VM Specifications
 - **Operating System**: Ubuntu 22.04 LTS
-- **Resources**: 4 CPU cores, 12GB RAM
-- **Network**: Host-only network + port forwarding
+- **Default Resources**: 4 CPU cores, 12GB RAM (configurable)
+- **Network**: Provider-specific networking with port forwarding
 - **Storage**: Dynamic disk allocation
 
 ## Post-Installation
-1. Wait ~30 minutes for complete installation
-2. Access Kibana at http://localhost:5601
-3. Login with `elastic` / `elastic`
-4. Navigate to **Analytics → Dashboard** to view pre-built dashboards
-5. Navigate to **Analytics → Discover** to explore raw log data
-6. Check **Management → Stack Management → Index Management** to verify data ingestion
 
-## Troubleshooting
+Installation takes approximately 10-15 minutes:
 
-### Kibana Not Accessible
+1. Access Kibana at http://localhost:5601
+2. Login with `elastic` / `elastic`
+3. Navigate to **Analytics → Dashboard** to view pre-built dashboards
+4. Navigate to **Analytics → Discover** to explore raw log data
+5. Check **Management → Stack Management → Index Management** to verify data ingestion
+
+## Basic Troubleshooting
+
+**Kibana Not Accessible:**
 ```bash
-# Check if VM is running
-VBoxManage list runningvms
-
-# Check Kibana service status on the VM
-vagrant ssh {{lab_name}}-ELASTIC
-sudo systemctl status kibana
+# Check VM status and SSH in to check services
+vagrant ssh {{lab_name}}-ELASTIC  # or provider equivalent
+sudo systemctl status elasticsearch kibana
 ```
 
-### No Data in Dashboards
+**No Data in Dashboards:**
 ```bash
-# Check if Windows agents are connected
-# On Windows machines, run:
+# Check Windows agents (run as Administrator on Windows machines)
 "C:\Program Files\Elastic\Agent\elastic-agent.exe" status
 
 # Check Elasticsearch indices
-curl -k -u elastic:elastic "https://localhost:9200/_cat/indices?v"
+curl -u elastic:elastic "http://localhost:9200/_cat/indices?v"
 ```
 
-### High Resource Usage
-- The Elastic VM requires 12GB RAM minimum
-- Consider closing other applications if system becomes slow
+**Performance Issues:**
+- Consider reducing VM resources if host system is constrained
 - Monitor system resources during operation
+- Check logs: `sudo journalctl -u elasticsearch -f`
 
 ## Log Retention
 - **Hot tier**: 7 days (immediate search and analysis)
-- **Warm tier**: 7-30 days (reduced replicas, slower search)
+- **Warm tier**: 7-30 days (reduced replicas, slower search)  
 - **Cold tier**: 30-90 days (minimal resources)
 - **Delete**: After 90 days (configurable)
 
