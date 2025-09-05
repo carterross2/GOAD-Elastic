@@ -18,6 +18,20 @@ For VirtualBox setup:
 ./goad.sh -t install -l <your_lab> -p virtualbox -e elastic
 ```
 
+## Configuration
+
+You can customize resource allocation by setting variables before installation:
+
+### Memory Configuration
+```bash
+# For smaller environments (8GB VM, 2GB heap)
+export ELASTIC_VM_MEMORY_GB=8
+export ELASTIC_VM_CPUS=2
+
+# For larger environments (16GB VM, 4GB heap) 
+export ELASTIC_VM_MEMORY_GB=16
+export ELASTIC_VM_CPUS=4
+
 ## Access
 
 ### From Host Machine (Port Forwarding)

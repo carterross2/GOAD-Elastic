@@ -1,6 +1,6 @@
 {
     "name": "elastic",
-    "description": "Add the Elastic Stack into the lab with EDR capabilities",
+    "description": "Add the Elastic Stack/EDR into the lab",
     "machines": [
         "elastic"
     ],
