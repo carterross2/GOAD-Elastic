@@ -1,3 +1,7 @@
+- name: Display installation progress
+  debug:
+    msg: "Starting Elasticsearch installation and configuration..."
+    
 - name: Update apt cache
   apt:
     update_cache: yes

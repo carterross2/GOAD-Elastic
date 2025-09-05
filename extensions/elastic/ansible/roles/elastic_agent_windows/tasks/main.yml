@@ -1,3 +1,7 @@
+- name: Display agent installation progress
+  debug:
+    msg: "Installing Elastic Agent on {{ inventory_hostname }}..."
+
 - name: Check if Elastic Agent service exists
   win_service:
     name: "Elastic Agent"

@@ -1,3 +1,7 @@
+- name: Display Kibana installation progress
+  debug:
+    msg: "Starting Kibana installation and configuration..."
+
 - name: Install Kibana
   apt:
     name: "kibana={{ kibana_version }}"
