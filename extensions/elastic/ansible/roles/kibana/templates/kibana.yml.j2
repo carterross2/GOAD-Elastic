@@ -1,8 +1,8 @@
 server.port: {{ kibana_port }}
 server.host: "{{ kibana_host }}"
 elasticsearch.hosts: ["http://{{ elasticsearch_host }}:9200"]
-elasticsearch.username: "elastic"
-elasticsearch.password: "elastic"
+elasticsearch.username: "kibana_system"  # Changed from "elastic"
+elasticsearch.password: "{{ elastic_password }}"  # This should be the kibana_system password
 
 # Add encryption key for saved objects
 xpack.encryptedSavedObjects.encryptionKey: "goad-elastic-encryption-key-32chars-long-minimum-requirement"

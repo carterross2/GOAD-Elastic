@@ -23,13 +23,11 @@
     state: started
     enabled: yes
 
-- name: Wait for Kibana to start
-  wait_for:
-    port: "{{ kibana_port }}"
-    host: "localhost"
-    delay: 60
+- name: Display startup message
+  debug:
+    msg: "Kibana is starting... This requires Elasticsearch to be ready first and may take several minutes."
 
-- name: Wait for Elasticsearch to be ready
+- name: Wait for Elasticsearch to be ready FIRST
   uri:
     url: "http://localhost:9200/_cluster/health"
     user: "elastic"
@@ -40,14 +38,14 @@
   retries: 20
   delay: 15
 
-- name: Wait additional time for Kibana API to be ready
+- name: Wait for Kibana to start (extended timeout)
   wait_for:
     port: "{{ kibana_port }}"
     host: "localhost"
     delay: 60
-    timeout: 300
+    timeout: 900
 
-- name: Verify Kibana is fully operational
+- name: Verify Kibana API is ready
   uri:
     url: "http://localhost:{{ kibana_port }}/api/status"
     method: GET
@@ -56,14 +54,9 @@
   retries: 15
   delay: 20
 
-- name: Check if Kibana API is responsive
-  uri:
-    url: "http://localhost:{{ kibana_port }}/api/status"
-    method: GET
-  register: kibana_status
-  until: kibana_status.status == 200
-  retries: 20
-  delay: 15
+- name: Display Kibana ready message
+  debug:
+    msg: "✓ Kibana is now ready and responding to requests"
 
 - name: Enable Elastic Security app (if available)
   uri:
@@ -89,9 +82,10 @@
     headers:
       Content-Type: "application/json"
       kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
   register: fleet_setup
   until: fleet_setup.status == 200
-  retries: 5
+  retries: 10
   delay: 30
 
 - name: Create Fleet Server host
@@ -101,6 +95,7 @@
     headers:
       Content-Type: "application/json"
       kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
     body_format: json
     body:
       name: "default"
@@ -116,6 +111,7 @@
     headers:
       Content-Type: "application/json"
       kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
     body_format: json
     body:
       name: "Fleet Server Policy"
@@ -123,6 +119,7 @@
       description: "Fleet Server policy for GOAD lab"
       has_fleet_server: true
   register: fleet_server_policy
+  failed_when: false
 
 - name: Create Windows agent policy
   uri:
@@ -131,12 +128,35 @@
     headers:
       Content-Type: "application/json"
       kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
     body_format: json
     body:
       name: "Windows Security Policy"
       namespace: "default"
       description: "Policy for Windows domain machines"
   register: windows_agent_policy
+  failed_when: false
+
+- name: Get existing Windows agent policy ID (if policy creation failed)
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/agent_policies"
+    method: GET
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
+  register: existing_windows_policies
+  when: windows_agent_policy.status is defined and windows_agent_policy.status == 409
+
+- name: Set Windows policy ID from existing policy
+  set_fact:
+    windows_policy_id: "{{ existing_windows_policies.json.items | selectattr('name', 'equalto', 'Windows Security Policy') | list | first | attr('id') }}"
+  when: windows_agent_policy.status is defined and windows_agent_policy.status == 409
+
+- name: Set Windows policy ID from newly created policy
+  set_fact:
+    windows_policy_id: "{{ windows_agent_policy.json.item.id }}"
+  when: windows_agent_policy.status is defined and windows_agent_policy.status == 200
 
 - name: Add System integration to Windows policy
   uri:
@@ -145,10 +165,11 @@
     headers:
       Content-Type: "application/json"
       kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
     body_format: json
     body:
       name: "system-integration"
-      policy_id: "{{ windows_agent_policy.json.item.id }}"
+      policy_id: "{{ windows_policy_id }}"
       package:
         name: "system"
         version: "latest"
@@ -162,10 +183,11 @@
     headers:
       Content-Type: "application/json"
       kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
     body_format: json
     body:
       name: "windows-integration"
-      policy_id: "{{ windows_agent_policy.json.item.id }}"
+      policy_id: "{{ windows_policy_id }}"
       package:
         name: "windows"
         version: "latest"
@@ -206,10 +228,30 @@
     method: GET
   register: kibana_final_health
 
-- name: Get VM network information
+- name: Debug network interfaces
+  debug:
+    msg: "Interface {{ item }}: {{ hostvars[inventory_hostname]['ansible_' + item].ipv4.address | default('no IP') }}"
+  loop: "{{ ansible_interfaces }}"
+  when: hostvars[inventory_hostname]['ansible_' + item].ipv4 is defined
+
+- name: Find host-only network IP
+  set_fact:
+    host_only_candidates: >-
+      {{
+        ansible_interfaces 
+        | map('regex_replace', '^(.*)$', 'ansible_\1')
+        | map('extract', hostvars[inventory_hostname])
+        | selectattr('ipv4', 'defined')
+        | selectattr('ipv4.address', 'defined')
+        | selectattr('ipv4.address', 'match', '^192\.168\.56\.')
+        | map(attribute='ipv4.address')
+        | list
+      }}
+
+- name: Set VM network information
   set_fact:
     elastic_vm_ip: "{{ ansible_default_ipv4.address }}"
-    elastic_host_only_ip: "{{ ansible_interfaces | map('extract', hostvars[inventory_hostname], 'ansible_' + item) | selectattr('ipv4', 'defined') | selectattr('ipv4.network', 'match', '192\\.168\\.56\\..*') | map(attribute='ipv4.address') | first | default(ansible_default_ipv4.address) }}"
+    elastic_host_only_ip: "{{ host_only_candidates[0] if host_only_candidates else ansible_default_ipv4.address }}"
 
 - name: Display comprehensive access information
   debug:
