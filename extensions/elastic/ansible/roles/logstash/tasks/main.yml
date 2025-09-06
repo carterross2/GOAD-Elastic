@@ -1,6 +1,6 @@
 - name: Install Logstash
   apt:
-    name: "logstash={{ logstash_version }}"
+    name: logstash
     state: present
 
 - name: Create logstash pipeline for Windows logs

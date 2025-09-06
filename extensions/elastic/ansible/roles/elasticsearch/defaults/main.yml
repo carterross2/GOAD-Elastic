@@ -1,5 +1,5 @@
 # Resource configuration
-elastic_vm_memory_gb: 12
+elastic_vm_memory_gb: 8
 elastic_vm_cpus: 4
 elasticsearch_heap_size: "{{ (elastic_vm_memory_gb * 0.3) | int }}g"
 elasticsearch_version: "8.11.0"

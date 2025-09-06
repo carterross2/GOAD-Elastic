@@ -33,7 +33,7 @@
   uri:
     url: "http://localhost:9200/_cluster/health"
     user: "elastic"
-    password: "elastic"
+    password: "{{ elastic_password }}"
     force_basic_auth: yes
   register: es_health
   until: es_health.json.status in ["yellow", "green"]
@@ -51,6 +51,9 @@
   uri:
     url: "http://localhost:{{ kibana_port }}/api/status"
     method: GET
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
   register: kibana_status
   until: kibana_status.status == 200
   retries: 15
@@ -69,13 +72,19 @@
   uri:
     url: "http://localhost:{{ kibana_port }}/api/saved_objects/_import"
     method: POST
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
     headers:
       kbn-xsrf: true
-      Content-Type: application/json
-    body: "{{ lookup('file', 'windows_dashboards.json') }}"
-    body_format: json
+    body_format: form-multipart
+    body:
+      file:
+        content: "{{ lookup('file', 'windows_dashboards.ndjson') }}"
+        filename: "windows_dashboards.ndjson"
+        mime_type: "application/x-ndjson"
   register: dashboard_import_result
-  until: dashboard_import_result.status in [200, 409]  # 409 = conflict (already exists)
+  until: dashboard_import_result.status in [200, 409]
   retries: 3
   delay: 15
 
@@ -90,6 +99,9 @@
   uri:
     url: "http://localhost:{{ kibana_port }}/api/saved_objects/index-pattern/windows-security-default"
     method: POST
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
     headers:
       Content-Type: "application/json"
       kbn-xsrf: true
@@ -115,10 +127,13 @@
   register: default_index_result
   failed_when: false
 
-- name: Enable Elastic Security app (if available)
+- name: Enable Elastic Security app
   uri:
     url: "http://localhost:{{ kibana_port }}/api/security_solution/sourcerer"
     method: POST
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
     headers:
       Content-Type: "application/json"
       kbn-xsrf: true
@@ -128,34 +143,44 @@
   register: security_app_result
   failed_when: false
 
-- name: Verify Kibana health
-  uri:
-    url: "http://localhost:{{ kibana_port }}/api/status"
-    method: GET
-  register: kibana_final_health
-
 - name: Display comprehensive access information
   debug:
     msg:
       - "==============================================="
-      - "Elastic Stack Installation Complete!"
+      - "🚀 ELASTIC STACK INSTALLATION COMPLETE! 🚀"
       - "==============================================="
-      - "Kibana URL: http://{{ ansible_default_ipv4.address }}:{{ kibana_port }}"
-      - "Elasticsearch URL: http://{{ ansible_default_ipv4.address }}:9200"
-      - "Username: elastic"
-      - "Password: elastic"
-      - "==============================================="
-      - "Service Status:"
-      - "- Elasticsearch: {{ final_es_health.json.status | default('Unknown') }}"
-      - "- Kibana: {{ 'Healthy' if kibana_final_health.status == 200 else 'Issue detected' }}"
-      - "==============================================="
-      - "Available Dashboards:"
-      - "- Windows Security Events Dashboard"
-      - "- Active Directory Authentication Dashboard" 
-      - "- Endpoint Security Overview Dashboard"
-      - "- Network Security Dashboard"
-      - "- Attack Timeline Dashboard"
-      - "==============================================="
-      - "Navigate to Analytics > Dashboard to access pre-built dashboards"
-      - "Navigate to Analytics > Discover to explore raw log data"
+      - ""
+      - "📊 ACCESS INFORMATION:"
+      - "• Kibana Web UI: http://{{ ansible_default_ipv4.address }}:{{ kibana_port }}"
+      - "• Elasticsearch API: http://{{ ansible_default_ipv4.address }}:9200"
+      - "• From Host (Port Forward): http://localhost:{{ kibana_port }}"
+      - ""
+      - "🔐 CREDENTIALS:"
+      - "• Username: elastic"
+      - "• Password: elastic"
+      - ""
+      - "📈 PRE-BUILT DASHBOARDS:"
+      - "Navigate to Analytics → Dashboard to access:"
+      - "• Windows Security Events Dashboard"
+      - "• Active Directory Authentication Dashboard" 
+      - "• Endpoint Security Overview Dashboard"
+      - "• Network Security Dashboard"
+      - "• Attack Timeline Dashboard"
+      - ""
+      - "🔍 DATA EXPLORATION:"
+      - "• Raw Logs: Analytics → Discover"
+      - "• Index Management: Management → Stack Management → Index Management"
+      - "• Detection Rules: Security → Rules ({{ rules_install_result.json.created | default([]) | length }} rules installed)"
+      - ""
+      - "📊 SERVICE STATUS:"
+      - "• Elasticsearch: {{ final_es_health.json.status | default('Unknown') }}"
+      - "• Kibana: {{ 'Healthy' if kibana_status.status == 200 else 'Issue detected' }}"
+      - "• Detection Rules: {{ rules_install_result.json.rules_installed | default(0) }} installed, {{ rules_enable_result.json.updated | default(0) }} enabled"
+
+      - ""
+      - "💡 QUICK START:"
+      - "1. Open http://{{ ansible_default_ipv4.address }}:{{ kibana_port }}"
+      - "2. Login with elastic/elastic"
+      - "3. Go to Analytics → Dashboard for security insights"
+      - "4. Check Security → Alerts for active detections"
       - "==============================================="

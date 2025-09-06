@@ -27,6 +27,10 @@
     state: present
   notify: restart elasticsearch
 
+- name: Display progress - Elasticsearch installed
+  debug:
+    msg: "✓ Elasticsearch {{ elasticsearch_version }} installed successfully"
+
 - name: Create elasticsearch configuration
   template:
     src: elasticsearch.yml.j2
@@ -52,6 +56,10 @@
     state: started
     enabled: yes
 
+- name: Display progress - Elasticsearch starting
+  debug:
+    msg: "Starting Elasticsearch service... (this may take 30-60 seconds)"
+
 - name: Wait for Elasticsearch to start
   wait_for:
     port: "{{ elasticsearch_port }}"
@@ -59,23 +67,57 @@
     delay: 30
     timeout: 300
 
-- name: Wait for Elasticsearch cluster to be ready
+- name: Wait for Elasticsearch to be responsive (without auth)
+  uri:
+    url: "http://localhost:{{ elasticsearch_port }}"
+    method: GET
+    status_code: [200, 401]  # 401 is expected when security is enabled
+  register: es_responsive
+  until: es_responsive.status in [200, 401]
+  retries: 10
+  delay: 15
+
+- name: Display progress - Elasticsearch responsive
+  debug:
+    msg: "✓ Elasticsearch is responding to requests"
+
+- name: Reset elastic user password
+  shell: |
+    printf 'y\n{{ elastic_password }}\n{{ elastic_password }}\n' | /usr/share/elasticsearch/bin/elasticsearch-reset-password -u elastic -i
+  register: elastic_password_reset
+  until: elastic_password_reset.rc == 0
+  retries: 5
+  delay: 10
+  changed_when: elastic_password_reset.rc == 0
+
+- name: Set kibana_system user password  
+  shell: |
+    printf 'y\n{{ elastic_password }}\n{{ elastic_password }}\n' | /usr/share/elasticsearch/bin/elasticsearch-reset-password -u kibana_system -i
+  register: kibana_password_reset
+  until: kibana_password_reset.rc == 0
+  retries: 5
+  delay: 10
+  changed_when: kibana_password_reset.rc == 0
+
+- name: Display progress - Security configured
+  debug:
+    msg: "✓ Elasticsearch security configured with password: elastic"
+
+- name: Wait for Elasticsearch cluster to be ready (with auth)
   uri:
     url: "http://localhost:{{ elasticsearch_port }}/_cluster/health?wait_for_status=yellow&timeout=60s"
     method: GET
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
   register: es_health
   until: es_health.status == 200
   retries: 10
   delay: 15
 
-- name: Reset elastic user password
-  shell: |
-    echo "{{ elastic_password }}" | /usr/share/elasticsearch/bin/elasticsearch-reset-password -u elastic -i
-  register: elastic_password_reset
-  until: elastic_password_reset.rc == 0
-  retries: 3
-  delay: 10
-  changed_when: elastic_password_reset.rc == 0
+- name: Display progress - Elasticsearch ready
+  debug:
+    msg: "✓ Elasticsearch cluster is ready and healthy"
 
 - name: Create Windows security index template
   uri:

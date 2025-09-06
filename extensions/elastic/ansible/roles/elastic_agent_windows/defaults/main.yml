@@ -1,4 +1,4 @@
-elastic_agent_version: "8.11.0"
+elastic_agent_version: "8.11.3"
 elastic_agent_download_url: "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ elastic_agent_version }}-windows-x86_64.zip"
 elastic_install_location: "c:\\tmp"
 fleet_enrollment_token: "auto-generate"

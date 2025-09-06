@@ -125,7 +125,7 @@
 - name: Install Elastic Agent as Windows service
   win_shell: |
     cd "{{ elastic_install_location }}\\elastic-agent-{{ elastic_agent_version }}-windows-x86_64"
-    .\\elastic-agent.exe install
+    .\\elastic-agent.exe install --force
   when: agent_download.changed
   register: agent_install
 

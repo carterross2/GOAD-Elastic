@@ -1,9 +1,9 @@
 server.port: {{ kibana_port }}
 server.host: "{{ kibana_host }}"
 elasticsearch.hosts: ["http://{{ elasticsearch_host }}:9200"]
-elasticsearch.username: "elastic"
-elasticsearch.password: "elastic"
+elasticsearch.username: "kibana_system"
+elasticsearch.password: "{{ elastic_password }}"
 
-# Fleet settings
+# Fleet settings  
 xpack.fleet.agents.elasticsearch.hosts: ["http://{{ elasticsearch_host }}:9200"]
 xpack.fleet.agents.fleet_server.hosts: ["http://{{ ansible_default_ipv4.address }}:8220"]

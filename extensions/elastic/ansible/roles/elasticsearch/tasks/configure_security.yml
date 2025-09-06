@@ -140,6 +140,8 @@
                 number_of_replicas: 0
           delete:
             min_age: "90d"
+            actions:
+              delete: {}
   register: ilm_policy_result
   until: ilm_policy_result.status == 200
   retries: 5
