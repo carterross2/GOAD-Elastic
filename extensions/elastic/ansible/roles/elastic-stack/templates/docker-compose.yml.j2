@@ -1,37 +1,88 @@
-version: "3.8"
-
 services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:{{ stack_version }}
+    container_name: elasticsearch
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=true
       - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms${ES_HEAP_SIZE} -Xmx${ES_HEAP_SIZE}"
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - cluster.name=${CLUSTER_NAME}
+      - node.name=elasticsearch
+      - path.data=/usr/share/elasticsearch/data
+      - http.host=0.0.0.0
+      - transport.host=0.0.0.0
+      - "ES_SETTING_BOOTSTRAP_MEMORY__LOCK=true"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    mem_limit: ${ES_MEM_LIMIT}
+    volumes:
+      - /opt/elastic/esdata:/usr/share/elasticsearch/data:rw
     ports:
       - "${ES_PORT}:9200"
+    networks:
+      - elastic
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f -u elastic:${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=30s || exit 1"]
+      interval: 30s
+      timeout: 30s
+      retries: 10
+      start_period: 120s
 
   kibana:
     image: docker.elastic.co/kibana/kibana:{{ stack_version }}
+    container_name: kibana
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
       - ELASTICSEARCH_USERNAME=elastic
       - ELASTICSEARCH_PASSWORD=${ELASTIC_PASSWORD}
+      - xpack.security.enabled=true
+      - KIBANA_SYSTEM_PASSWORD=${ELASTIC_PASSWORD}
+    mem_limit: ${KB_MEM_LIMIT}
     ports:
       - "${KIBANA_PORT}:5601"
+    networks:
+      - elastic
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5601/api/status || exit 1"]
+      interval: 30s
+      timeout: 30s
+      retries: 15
+      start_period: 180s
 
   fleet-server:
     image: docker.elastic.co/beats/elastic-agent:{{ stack_version }}
-    command: >
-      elastic-agent container
-      --fleet-server
-      --fleet-server.host=0.0.0.0
-      --fleet-server.port=${FLEET_PORT}
-      --fleet-server.elasticsearch.host=http://elasticsearch:9200
-      --fleet-server.policy=FleetServerPolicy
-      --fleet-server.service-token=${FLEET_SERVER_SERVICE_TOKEN}
-      --non-interactive
+    container_name: fleet-server
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      kibana:
+        condition: service_healthy
     environment:
+      - FLEET_SERVER_ENABLE=1
+      - FLEET_SERVER_ELASTICSEARCH_HOST=http://elasticsearch:9200
+      - FLEET_SERVER_SERVICE_TOKEN=${FLEET_SERVER_SERVICE_TOKEN}
+      - FLEET_SERVER_POLICY_ID=fleet-server-policy
       - ELASTICSEARCH_USERNAME=elastic
       - ELASTICSEARCH_PASSWORD=${ELASTIC_PASSWORD}
+      - FLEET_SERVER_ELASTICSEARCH_USERNAME=elastic
+      - FLEET_SERVER_ELASTICSEARCH_PASSWORD=${ELASTIC_PASSWORD}
     ports:
       - "${FLEET_PORT}:8220"
+    networks:
+      - elastic
+
+networks:
+  elastic:
+    driver: bridge

@@ -1,59 +1,208 @@
-- name: Ensure dependencies installed
+- name: Update apt package index
+  apt:
+    update_cache: yes
+
+- name: Install prerequisites
   apt:
     name:
-      - docker.io
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    state: present
+
+- name: Add Docker GPG key
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+
+- name: Add Docker repository
+  apt_repository:
+    repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+    state: present
+
+- name: Update apt package index after adding Docker repo
+  apt:
+    update_cache: yes
+
+- name: Install Docker
+  apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
       - docker-compose-plugin
     state: present
-    update_cache: yes
+
+- name: Add user to docker group
+  user:
+    name: "{{ ansible_user }}"
+    groups: docker
+    append: yes
+
+- name: Start and enable Docker service
+  systemd:
+    name: docker
+    state: started
+    enabled: yes
+
+- name: Set vm.max_map_count for Elasticsearch (runtime)
+  shell: sysctl -w vm.max_map_count=262144
+  become: yes
+
+- name: Set vm.max_map_count for Elasticsearch (persistent)
+  lineinfile:
+    path: /etc/sysctl.conf
+    line: "vm.max_map_count=262144"
+    create: yes
+  become: yes
 
 - name: Create Elastic stack directory
   file:
     path: /opt/elastic
     state: directory
     mode: "0755"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+
+- name: Create Elasticsearch data directory
+  file:
+    path: /opt/elastic/esdata
+    state: directory
+    mode: "0777"
+    owner: "1000"
+    group: "1000"
 
 - name: Template .env file
   template:
     src: ".env.j2"
     dest: "/opt/elastic/.env"
     mode: "0640"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
 
 - name: Template docker-compose.yml
   template:
     src: "docker-compose.yml.j2"
     dest: "/opt/elastic/docker-compose.yml"
     mode: "0644"
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+
+- name: Stop any existing containers
+  shell: docker compose -f /opt/elastic/docker-compose.yml down -v
+  args:
+    executable: /bin/bash
+  ignore_errors: yes
+
+- name: Remove any existing volumes
+  shell: docker volume prune -f
+  args:
+    executable: /bin/bash
+  ignore_errors: yes
 
 - name: Start Elastic containers
   shell: docker compose -f /opt/elastic/docker-compose.yml up -d
   args:
     executable: /bin/bash
+  register: compose_result
+  failed_when: compose_result.rc != 0
 
-- name: Wait for Elasticsearch
+- name: Wait a moment for containers to initialize
+  pause:
+    seconds: 30
+
+- name: Check Elasticsearch container logs
+  shell: docker logs elasticsearch
+  args:
+    executable: /bin/bash
+  register: es_logs
+  ignore_errors: yes
+
+- name: Display Elasticsearch logs for debugging
+  debug:
+    msg: "Elasticsearch logs: {{ es_logs.stdout_lines }}"
+  when: es_logs.stdout_lines is defined
+
+- name: Display Elasticsearch error logs for debugging
+  debug:
+    msg: "Elasticsearch errors: {{ es_logs.stderr_lines }}"
+  when: es_logs.stderr_lines is defined
+
+- name: Check container status
+  shell: docker ps -a --filter "name=elasticsearch"
+  args:
+    executable: /bin/bash
+  register: container_status
+
+- name: Display container status
+  debug:
+    msg: "Container status: {{ container_status.stdout_lines }}"
+
+- name: Wait for Elasticsearch to be healthy (with better error handling)
   uri:
-    url: "http://localhost:9200"
+    url: "http://localhost:9200/_cluster/health"
     method: GET
     user: elastic
     password: "{{ elastic_password }}"
     force_basic_auth: yes
-    status_code: 200
-  register: es_ping
-  retries: 60
-  delay: 5
-  until: es_ping.status == 200
+    status_code: [200, 201]
+  register: es_health
+  retries: 30
+  delay: 10
+  until: es_health.status in [200, 201]
+  ignore_errors: yes
 
-- name: Wait for Kibana
+- name: If Elasticsearch failed, show more debugging info
+  block:
+    - name: Get detailed container info
+      shell: docker inspect elasticsearch
+      register: container_inspect
+      ignore_errors: yes
+    
+    - name: Show container inspect (truncated)
+      debug:
+        msg: "Container state: {{ (container_inspect.stdout | from_json)[0].State }}"
+      when: container_inspect.stdout is defined and container_inspect.stdout != ""
+
+    - name: Check system resources
+      shell: |
+        echo "=== Memory Usage ==="
+        free -h
+        echo "=== Disk Usage ==="
+        df -h /opt/elastic
+        echo "=== VM Max Map Count ==="
+        cat /proc/sys/vm/max_map_count
+        echo "=== Recent Docker logs ==="
+        docker logs --tail 20 elasticsearch
+      register: system_resources
+      ignore_errors: yes
+    
+    - name: Show system resources
+      debug:
+        msg: "{{ system_resources.stdout }}"
+      when: system_resources.stdout is defined
+        
+  when: es_health is failed
+
+- name: Fail if Elasticsearch is not healthy
+  fail:
+    msg: "Elasticsearch failed to start. Check the logs above for details."
+  when: es_health is failed
+
+- name: Wait for Kibana to be ready
   uri:
     url: "http://localhost:5601/api/status"
     method: GET
     user: elastic
     password: "{{ elastic_password }}"
     force_basic_auth: yes
-    status_code: 200
-  register: kb_ping
+    status_code: [200, 201]
+  register: kb_status
   retries: 60
-  delay: 5
-  until: kb_ping.status == 200
+  delay: 10
+  until: kb_status.status in [200, 201] and (kb_status.json.status.overall.level is defined and kb_status.json.status.overall.level == 'available')
 
 - name: Setup Fleet and create policy + token
   include_tasks: fleet_setup.yml
