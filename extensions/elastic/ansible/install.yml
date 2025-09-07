@@ -1,0 +1,10 @@
+- name: Deploy Elastic Stack (Elasticsearch, Kibana, Fleet)
+  hosts: elastic_server
+  become: yes
+  roles:
+    - elastic-stack
+
+- name: Enroll Windows endpoints into Fleet with Elastic Defend
+  hosts: elastic_agents_windows
+  roles:
+    - elastic-agent

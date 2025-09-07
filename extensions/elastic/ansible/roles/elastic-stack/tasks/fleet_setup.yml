@@ -1,0 +1,52 @@
+- name: Setup Fleet
+  uri:
+    url: "http://localhost:5601/api/fleet/setup"
+    method: POST
+    user: elastic
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+    headers:
+      kbn-xsrf: "true"
+    status_code: 200
+
+- name: Create Windows Defend policy
+  uri:
+    url: "http://localhost:5601/api/fleet/agent_policies"
+    method: POST
+    user: elastic
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+    headers:
+      kbn-xsrf: "true"
+    body_format: json
+    body:
+      name: "Windows-Defend"
+      description: "EDR for Windows hosts"
+      namespace: "default"
+      monitoring_enabled: ["logs", "metrics"]
+    status_code: 200
+  register: policy_create
+
+- name: Save policy id
+  set_fact:
+    fleet_policy_id: "{{ policy_create.json.item.id }}"
+
+- name: Create enrollment token
+  uri:
+    url: "http://localhost:5601/api/fleet/enrollment-api-keys"
+    method: POST
+    user: elastic
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+    headers:
+      kbn-xsrf: "true"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      name: "WindowsEnrollToken"
+      policy_id: "{{ fleet_policy_id }}"
+  register: enroll_token_resp
+
+- name: Store Fleet enrollment token
+  set_fact:
+    fleet_enrollment_token: "{{ enroll_token_resp.json.item.api_key }}"

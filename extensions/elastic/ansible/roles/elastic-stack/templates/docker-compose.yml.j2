@@ -1,0 +1,37 @@
+version: "3.8"
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:{{ stack_version }}
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=true
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD}
+    ports:
+      - "${ES_PORT}:9200"
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:{{ stack_version }}
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=elastic
+      - ELASTICSEARCH_PASSWORD=${ELASTIC_PASSWORD}
+    ports:
+      - "${KIBANA_PORT}:5601"
+
+  fleet-server:
+    image: docker.elastic.co/beats/elastic-agent:{{ stack_version }}
+    command: >
+      elastic-agent container
+      --fleet-server
+      --fleet-server.host=0.0.0.0
+      --fleet-server.port=${FLEET_PORT}
+      --fleet-server.elasticsearch.host=http://elasticsearch:9200
+      --fleet-server.policy=FleetServerPolicy
+      --fleet-server.service-token=${FLEET_SERVER_SERVICE_TOKEN}
+      --non-interactive
+    environment:
+      - ELASTICSEARCH_USERNAME=elastic
+      - ELASTICSEARCH_PASSWORD=${ELASTIC_PASSWORD}
+    ports:
+      - "${FLEET_PORT}:8220"

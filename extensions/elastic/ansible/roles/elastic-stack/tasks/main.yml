@@ -1,0 +1,59 @@
+- name: Ensure dependencies installed
+  apt:
+    name:
+      - docker.io
+      - docker-compose-plugin
+    state: present
+    update_cache: yes
+
+- name: Create Elastic stack directory
+  file:
+    path: /opt/elastic
+    state: directory
+    mode: "0755"
+
+- name: Template .env file
+  template:
+    src: ".env.j2"
+    dest: "/opt/elastic/.env"
+    mode: "0640"
+
+- name: Template docker-compose.yml
+  template:
+    src: "docker-compose.yml.j2"
+    dest: "/opt/elastic/docker-compose.yml"
+    mode: "0644"
+
+- name: Start Elastic containers
+  shell: docker compose -f /opt/elastic/docker-compose.yml up -d
+  args:
+    executable: /bin/bash
+
+- name: Wait for Elasticsearch
+  uri:
+    url: "http://localhost:9200"
+    method: GET
+    user: elastic
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+    status_code: 200
+  register: es_ping
+  retries: 60
+  delay: 5
+  until: es_ping.status == 200
+
+- name: Wait for Kibana
+  uri:
+    url: "http://localhost:5601/api/status"
+    method: GET
+    user: elastic
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+    status_code: 200
+  register: kb_ping
+  retries: 60
+  delay: 5
+  until: kb_ping.status == 200
+
+- name: Setup Fleet and create policy + token
+  include_tasks: fleet_setup.yml

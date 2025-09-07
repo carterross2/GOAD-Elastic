@@ -1,0 +1,23 @@
+- name: Create temp directory
+  win_file:
+    path: C:\Temp
+    state: directory
+
+- name: Download Elastic Agent MSI
+  win_get_url:
+    url: "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ stack_version }}-windows-x86_64.msi"
+    dest: "C:\\Temp\\elastic-agent-{{ stack_version }}-windows-x86_64.msi"
+
+- name: Install Elastic Agent with Fleet enrollment
+  win_shell: |
+    $msi = "C:\Temp\elastic-agent-{{ stack_version }}-windows-x86_64.msi"
+    $args = "/i `"$msi`" /quiet /norestart FLEET_ENROLL=1 FLEET_URL=http://{{ hostvars['elastic']['ansible_host'] }}:8220 FLEET_ENROLLMENT_TOKEN={{ hostvars['elastic']['fleet_enrollment_token'] }} FLEET_INSECURE=1"
+    Start-Process msiexec.exe -ArgumentList $args -Wait -NoNewWindow
+  args:
+    executable: PowerShell
+
+- name: Ensure Elastic Agent service running
+  win_service:
+    name: "Elastic Agent"
+    state: started
+    start_mode: auto
