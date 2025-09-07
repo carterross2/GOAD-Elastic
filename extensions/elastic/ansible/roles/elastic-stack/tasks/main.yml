@@ -66,13 +66,28 @@
     owner: "{{ ansible_user }}"
     group: "{{ ansible_user }}"
 
-- name: Create Elasticsearch data directory
+- name: Stop any existing containers
+  shell: docker compose -f /opt/elastic/docker-compose.yml down -v
+  args:
+    executable: /bin/bash
+  ignore_errors: yes
+
+- name: Remove any existing volumes and data
+  shell: |
+    docker volume prune -f
+    rm -rf /opt/elastic/esdata
+  args:
+    executable: /bin/bash
+  ignore_errors: yes
+
+- name: Create Elasticsearch data directory with correct permissions
   file:
     path: /opt/elastic/esdata
     state: directory
     mode: "0777"
     owner: "1000"
     group: "1000"
+  become: yes
 
 - name: Template .env file
   template:
@@ -90,18 +105,6 @@
     owner: "{{ ansible_user }}"
     group: "{{ ansible_user }}"
 
-- name: Stop any existing containers
-  shell: docker compose -f /opt/elastic/docker-compose.yml down -v
-  args:
-    executable: /bin/bash
-  ignore_errors: yes
-
-- name: Remove any existing volumes
-  shell: docker volume prune -f
-  args:
-    executable: /bin/bash
-  ignore_errors: yes
-
 - name: Start Elastic containers
   shell: docker compose -f /opt/elastic/docker-compose.yml up -d
   args:
@@ -109,38 +112,7 @@
   register: compose_result
   failed_when: compose_result.rc != 0
 
-- name: Wait a moment for containers to initialize
-  pause:
-    seconds: 30
-
-- name: Check Elasticsearch container logs
-  shell: docker logs elasticsearch
-  args:
-    executable: /bin/bash
-  register: es_logs
-  ignore_errors: yes
-
-- name: Display Elasticsearch logs for debugging
-  debug:
-    msg: "Elasticsearch logs: {{ es_logs.stdout_lines }}"
-  when: es_logs.stdout_lines is defined
-
-- name: Display Elasticsearch error logs for debugging
-  debug:
-    msg: "Elasticsearch errors: {{ es_logs.stderr_lines }}"
-  when: es_logs.stderr_lines is defined
-
-- name: Check container status
-  shell: docker ps -a --filter "name=elasticsearch"
-  args:
-    executable: /bin/bash
-  register: container_status
-
-- name: Display container status
-  debug:
-    msg: "Container status: {{ container_status.stdout_lines }}"
-
-- name: Wait for Elasticsearch to be healthy (with better error handling)
+- name: Wait for Elasticsearch to be responsive
   uri:
     url: "http://localhost:9200/_cluster/health"
     method: GET
@@ -152,44 +124,6 @@
   retries: 30
   delay: 10
   until: es_health.status in [200, 201]
-  ignore_errors: yes
-
-- name: If Elasticsearch failed, show more debugging info
-  block:
-    - name: Get detailed container info
-      shell: docker inspect elasticsearch
-      register: container_inspect
-      ignore_errors: yes
-    
-    - name: Show container inspect (truncated)
-      debug:
-        msg: "Container state: {{ (container_inspect.stdout | from_json)[0].State }}"
-      when: container_inspect.stdout is defined and container_inspect.stdout != ""
-
-    - name: Check system resources
-      shell: |
-        echo "=== Memory Usage ==="
-        free -h
-        echo "=== Disk Usage ==="
-        df -h /opt/elastic
-        echo "=== VM Max Map Count ==="
-        cat /proc/sys/vm/max_map_count
-        echo "=== Recent Docker logs ==="
-        docker logs --tail 20 elasticsearch
-      register: system_resources
-      ignore_errors: yes
-    
-    - name: Show system resources
-      debug:
-        msg: "{{ system_resources.stdout }}"
-      when: system_resources.stdout is defined
-        
-  when: es_health is failed
-
-- name: Fail if Elasticsearch is not healthy
-  fail:
-    msg: "Elasticsearch failed to start. Check the logs above for details."
-  when: es_health is failed
 
 - name: Wait for Kibana to be ready
   uri:

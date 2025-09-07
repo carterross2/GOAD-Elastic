@@ -15,7 +15,11 @@ services:
       - path.data=/usr/share/elasticsearch/data
       - http.host=0.0.0.0
       - transport.host=0.0.0.0
+      - network.host=0.0.0.0
       - "ES_SETTING_BOOTSTRAP_MEMORY__LOCK=true"
+      # Additional settings for better startup reliability
+      - indices.query.bool.max_clause_count=8192
+      - action.destructive_requires_name=false
     ulimits:
       memlock:
         soft: -1
@@ -31,11 +35,13 @@ services:
     networks:
       - elastic
     healthcheck:
-      test: ["CMD-SHELL", "curl -f -u elastic:${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=30s || exit 1"]
+      test: |
+        curl -f -u elastic:${ELASTIC_PASSWORD} http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=30s || exit 1
       interval: 30s
       timeout: 30s
       retries: 10
       start_period: 120s
+    restart: unless-stopped
 
   kibana:
     image: docker.elastic.co/kibana/kibana:{{ stack_version }}
@@ -49,17 +55,24 @@ services:
       - ELASTICSEARCH_PASSWORD=${ELASTIC_PASSWORD}
       - xpack.security.enabled=true
       - KIBANA_SYSTEM_PASSWORD=${ELASTIC_PASSWORD}
+      - xpack.encryptedSavedObjects.encryptionKey=${ENCRYPTION_KEY}
+      - xpack.security.encryptionKey=${ENCRYPTION_KEY}
+      - xpack.reporting.encryptionKey=${ENCRYPTION_KEY}
+      # Reduce memory pressure
+      - NODE_OPTIONS=--max-old-space-size=4096
     mem_limit: ${KB_MEM_LIMIT}
     ports:
       - "${KIBANA_PORT}:5601"
     networks:
       - elastic
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:5601/api/status || exit 1"]
+      test: |
+        curl -f http://localhost:5601/api/status || exit 1
       interval: 30s
       timeout: 30s
       retries: 15
       start_period: 180s
+    restart: unless-stopped
 
   fleet-server:
     image: docker.elastic.co/beats/elastic-agent:{{ stack_version }}
@@ -78,10 +91,13 @@ services:
       - ELASTICSEARCH_PASSWORD=${ELASTIC_PASSWORD}
       - FLEET_SERVER_ELASTICSEARCH_USERNAME=elastic
       - FLEET_SERVER_ELASTICSEARCH_PASSWORD=${ELASTIC_PASSWORD}
+      - FLEET_SERVER_HOST=0.0.0.0
+      - FLEET_SERVER_PORT=8220
     ports:
       - "${FLEET_PORT}:8220"
     networks:
       - elastic
+    restart: unless-stopped
 
 networks:
   elastic:
