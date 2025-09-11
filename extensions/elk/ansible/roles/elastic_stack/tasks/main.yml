@@ -64,6 +64,33 @@
     state: started
     daemon_reload: yes
 
+- name: Wait for Elasticsearch service to be active
+  systemd:
+    name: elasticsearch
+    state: started
+  register: elasticsearch_service
+  until: elasticsearch_service.status.ActiveState == "active"
+  retries: 5
+  delay: 10
+
+- name: Check Elasticsearch service status on failure
+  shell: systemctl status elasticsearch --no-pager -l
+  register: elasticsearch_status
+  when: elasticsearch_service.failed is defined and elasticsearch_service.failed
+
+- name: Show Elasticsearch logs on service failure
+  shell: journalctl -u elasticsearch --no-pager -l -n 50
+  register: elasticsearch_logs
+  when: elasticsearch_service.failed is defined and elasticsearch_service.failed
+
+- name: Display service status and logs on failure
+  debug:
+    msg: |
+      Elasticsearch service failed to start properly.
+      Service Status: {{ elasticsearch_status.stdout }}
+      Recent Logs: {{ elasticsearch_logs.stdout }}
+  when: elasticsearch_service.failed is defined and elasticsearch_service.failed
+
 - name: Wait for Elasticsearch to be ready
   uri:
     url: "http://localhost:9200/_cluster/health"
@@ -71,8 +98,32 @@
     status_code: 200
   register: elasticsearch_health
   until: elasticsearch_health.status == 200
-  retries: 60
-  delay: 10
+  retries: 3
+  delay: 15
+  failed_when: false
+
+- name: Check Elasticsearch HTTP response on health check failure
+  uri:
+    url: "http://localhost:9200/"
+    method: GET
+  register: elasticsearch_basic_check
+  ignore_errors: yes
+  when: elasticsearch_health.status != 200
+
+- name: Show detailed Elasticsearch logs on HTTP failure
+  shell: journalctl -u elasticsearch --no-pager -l -n 100
+  register: detailed_elasticsearch_logs
+  when: elasticsearch_health.status != 200
+
+- name: Fail with detailed error information
+  fail:
+    msg: |
+      Elasticsearch failed to become ready after 3 attempts (45 seconds).
+      HTTP Health Check Status: {{ elasticsearch_health.status | default('No response') }}
+      Basic HTTP Check: {{ elasticsearch_basic_check.status | default('Failed') }}
+      Recent Elasticsearch Logs:
+      {{ detailed_elasticsearch_logs.stdout }}
+  when: elasticsearch_health.status != 200
 
 - name: Set built-in user passwords
   uri:
@@ -114,8 +165,21 @@
     status_code: 200
   register: kibana_health
   until: kibana_health.status == 200
-  retries: 60
-  delay: 15
+  retries: 3
+  delay: 20
+
+- name: Show Kibana logs on failure
+  shell: journalctl -u kibana --no-pager -l -n 50
+  register: kibana_logs
+  when: kibana_health.status != 200
+
+- name: Fail with Kibana error details
+  fail:
+    msg: |
+      Kibana failed to start after 3 attempts (60 seconds).
+      Status: {{ kibana_health.status | default('No response') }}
+      Kibana Logs: {{ kibana_logs.stdout }}
+  when: kibana_health.status != 200
 
 # Fleet Server Setup with proper sequencing
 - name: Setup Fleet in Kibana
@@ -142,7 +206,7 @@
     status_code: 200
   register: fleet_ready
   until: fleet_ready.status == 200
-  retries: 30
+  retries: 10
   delay: 10
 
 - name: Create Fleet Server policy FIRST
@@ -246,8 +310,8 @@
     status_code: 200
   register: fleet_server_health
   until: fleet_server_health.status == 200
-  retries: 60
-  delay: 10
+  retries: 3
+  delay: 15
 
 - name: Wait additional time for Fleet Server initialization
   pause:
@@ -344,8 +408,8 @@
     status_code: [200, 409]
   register: enrollment_token_response
   until: enrollment_token_response.status == 200
-  retries: 10
-  delay: 15
+  retries: 5
+  delay: 10
   when: agent_policy_response.json.item.id is defined
 
 - name: Create web-accessible directory for tokens
