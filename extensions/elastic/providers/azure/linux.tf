@@ -4,5 +4,5 @@
   linux_version      = "latest"
   private_ip_address = "{{ip_range}}.52"
   password           = "sgdvnkjhdshlsd"
-  size               = "Standard_D4s_v3"  # 4cpu/16GB for Elastic Stack
+  size               = "Standard_D2s_v3"  # 2cpu/8GB for streamlined EDR
 }

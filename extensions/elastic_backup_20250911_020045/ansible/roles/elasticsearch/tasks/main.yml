@@ -1,6 +1,6 @@
 - name: Display installation progress
   debug:
-    msg: "Starting Elasticsearch installation for EDR..."
+    msg: "Starting Elasticsearch installation and configuration..."
     
 - name: Update apt cache
   apt:
@@ -67,11 +67,11 @@
     delay: 30
     timeout: 300
 
-- name: Wait for Elasticsearch to be responsive
+- name: Wait for Elasticsearch to be responsive (without auth)
   uri:
     url: "http://localhost:{{ elasticsearch_port }}"
     method: GET
-    status_code: [200, 401]
+    status_code: [200, 401]  # 401 is expected when security is enabled
   register: es_responsive
   until: es_responsive.status in [200, 401]
   retries: 10
@@ -103,7 +103,7 @@
   debug:
     msg: "✓ Elasticsearch security configured with password: elastic"
 
-- name: Wait for Elasticsearch cluster to be ready
+- name: Wait for Elasticsearch cluster to be ready (with auth)
   uri:
     url: "http://localhost:{{ elasticsearch_port }}/_cluster/health?wait_for_status=yellow&timeout=60s"
     method: GET
@@ -117,7 +117,93 @@
 
 - name: Display progress - Elasticsearch ready
   debug:
-    msg: "✓ Elasticsearch cluster is ready for EDR data ingestion"
+    msg: "✓ Elasticsearch cluster is ready and healthy"
+
+- name: Create Windows security index template
+  uri:
+    url: "http://localhost:{{ elasticsearch_port }}/_index_template/windows-security"
+    method: PUT
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+    body_format: json
+    body:
+      index_patterns: ["windows-*", "endpoint-*", "logs-*"]
+      template:
+        settings:
+          number_of_shards: 1
+          number_of_replicas: 0
+          index.refresh_interval: "5s"
+        mappings:
+          properties:
+            "@timestamp":
+              type: date
+            event:
+              properties:
+                action:
+                  type: keyword
+                category:
+                  type: keyword
+                code:
+                  type: keyword
+                dataset:
+                  type: keyword
+                id:
+                  type: keyword
+                kind:
+                  type: keyword
+                module:
+                  type: keyword
+                outcome:
+                  type: keyword
+                provider:
+                  type: keyword
+                type:
+                  type: keyword
+            host:
+              properties:
+                hostname:
+                  type: keyword
+                name:
+                  type: keyword
+                os:
+                  properties:
+                    family:
+                      type: keyword
+                    name:
+                      type: keyword
+                    version:
+                      type: keyword
+            process:
+              properties:
+                name:
+                  type: keyword
+                pid:
+                  type: long
+                executable:
+                  type: keyword
+                command_line:
+                  type: text
+            user:
+              properties:
+                name:
+                  type: keyword
+                domain:
+                  type: keyword
+            winlog:
+              properties:
+                channel:
+                  type: keyword
+                event_id:
+                  type: keyword
+                provider_name:
+                  type: keyword
+                record_id:
+                  type: keyword
+  register: index_template_result
+  until: index_template_result.status == 200
+  retries: 5
+  delay: 10
 
 - name: Verify Elasticsearch cluster health
   uri:
@@ -136,3 +222,6 @@
       - "Elasticsearch Status: {{ final_es_health.json.status }}"
       - "Number of nodes: {{ final_es_health.json.number_of_nodes }}"
       - "Active shards: {{ final_es_health.json.active_shards }}"
+
+- name: Configure Elasticsearch security features
+  include_tasks: configure_security.yml

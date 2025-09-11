@@ -1,0 +1,17 @@
+server.port: {{ kibana_port }}
+server.host: "{{ kibana_host }}"
+elasticsearch.hosts: ["http://{{ elasticsearch_host }}:9200"]
+elasticsearch.username: "kibana_system"  # Changed from "elastic"
+elasticsearch.password: "{{ elastic_password }}"  # This should be the kibana_system password
+
+# Add encryption key for saved objects
+xpack.encryptedSavedObjects.encryptionKey: "goad-elastic-encryption-key-32chars-long-minimum-requirement"
+
+# Fleet settings
+xpack.fleet.agents.enabled: true
+xpack.fleet.agents.elasticsearch.hosts: ["http://{{ elasticsearch_host }}:9200"]
+xpack.fleet.agents.fleet_server.hosts: ["http://{{ ansible_default_ipv4.address }}:8220"]
+
+# Enable security features
+xpack.security.enabled: true
+xpack.fleet.registryUrl: "https://epr.elastic.co"

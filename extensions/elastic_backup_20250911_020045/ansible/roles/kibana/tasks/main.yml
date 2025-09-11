@@ -1,6 +1,6 @@
 - name: Display Kibana installation progress
   debug:
-    msg: "Starting Kibana installation for EDR management..."
+    msg: "Starting Kibana installation and configuration..."
 
 - name: Install Kibana
   apt:
@@ -38,46 +38,12 @@
   retries: 20
   delay: 15
 
-- name: Check Kibana service status before waiting
-  shell: systemctl status kibana --no-pager
-  register: kibana_service_status
-  failed_when: false
-
-- name: Display Kibana service status
-  debug:
-    msg: "{{ kibana_service_status.stdout_lines }}"
-
-- name: Check Kibana logs for errors
-  shell: tail -20 /var/log/kibana/kibana.log
-  register: kibana_logs
-  failed_when: false
-
-- name: Display recent Kibana logs
-  debug:
-    msg: "{{ kibana_logs.stdout_lines }}"
-
-- name: Wait for Kibana to start (with debugging)
+- name: Wait for Kibana to start (extended timeout)
   wait_for:
     port: "{{ kibana_port }}"
     host: "localhost"
-    delay: 30
-    timeout: 300
-  register: kibana_wait_result
-  failed_when: false
-
-- name: Check if Kibana failed to start
-  block:
-    - name: Display Kibana startup failure details
-      debug:
-        msg: 
-          - "Kibana failed to start within timeout"
-          - "Check the logs above for configuration issues"
-          - "Common issues: Elasticsearch not ready, configuration errors, memory issues"
-    
-    - name: Fail with helpful message
-      fail:
-        msg: "Kibana startup failed - check service status and logs above"
-  when: kibana_wait_result.failed | default(false)
+    delay: 60
+    timeout: 900
 
 - name: Verify Kibana API is ready
   uri:
@@ -85,14 +51,31 @@
     method: GET
   register: kibana_status
   until: kibana_status.status == 200
-  retries: 3
-  delay: 15
+  retries: 15
+  delay: 20
 
 - name: Display Kibana ready message
   debug:
-    msg: "✓ Kibana is now ready for EDR management"
+    msg: "✓ Kibana is now ready and responding to requests"
 
-- name: Setup Fleet for EDR agents
+- name: Enable Elastic Security app (if available)
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/security_solution/sourcerer"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+    body_format: json
+    body:
+      patternList: ["windows-*", "logs-windows.*", "logs-endpoint.*", "security-alerts-*"]
+  register: security_app_result
+  failed_when: false
+
+- name: Wait for Fleet to be ready
+  pause:
+    seconds: 60
+
+- name: Setup Fleet
   uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/setup"
     method: POST
@@ -133,12 +116,12 @@
     body:
       name: "Fleet Server Policy"
       namespace: "default"
-      description: "Fleet Server policy for GOAD EDR lab"
+      description: "Fleet Server policy for GOAD lab"
       has_fleet_server: true
   register: fleet_server_policy
   failed_when: false
 
-- name: Create Windows EDR agent policy
+- name: Create Windows agent policy
   uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/agent_policies"
     method: POST
@@ -148,13 +131,13 @@
       Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
     body_format: json
     body:
-      name: "Windows EDR Policy"
+      name: "Windows Security Policy"
       namespace: "default"
-      description: "EDR policy for Windows domain machines"
-  register: windows_edr_policy
+      description: "Policy for Windows domain machines"
+  register: windows_agent_policy
   failed_when: false
 
-- name: Get existing Windows EDR policy ID (if policy creation failed)
+- name: Get existing Windows agent policy ID (if policy creation failed)
   uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/agent_policies"
     method: GET
@@ -162,20 +145,20 @@
       Content-Type: "application/json"
       kbn-xsrf: true
       Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
-  register: existing_edr_policies
-  when: windows_edr_policy.status is defined and windows_edr_policy.status == 409
+  register: existing_windows_policies
+  when: windows_agent_policy.status is defined and windows_agent_policy.status == 409
 
-- name: Set Windows EDR policy ID from existing policy
+- name: Set Windows policy ID from existing policy
   set_fact:
-    windows_edr_policy_id: "{{ existing_edr_policies.json.items | selectattr('name', 'equalto', 'Windows EDR Policy') | list | first | attr('id') }}"
-  when: windows_edr_policy.status is defined and windows_edr_policy.status == 409
+    windows_policy_id: "{{ existing_windows_policies.json.items | selectattr('name', 'equalto', 'Windows Security Policy') | list | first | attr('id') }}"
+  when: windows_agent_policy.status is defined and windows_agent_policy.status == 409
 
-- name: Set Windows EDR policy ID from newly created policy
+- name: Set Windows policy ID from newly created policy
   set_fact:
-    windows_edr_policy_id: "{{ windows_edr_policy.json.item.id }}"
-  when: windows_edr_policy.status is defined and windows_edr_policy.status == 200
+    windows_policy_id: "{{ windows_agent_policy.json.item.id }}"
+  when: windows_agent_policy.status is defined and windows_agent_policy.status == 200
 
-- name: Add Endpoint Security integration to Windows EDR policy
+- name: Add System integration to Windows policy
   uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies"
     method: POST
@@ -185,38 +168,30 @@
       Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
     body_format: json
     body:
-      name: "endpoint-security-policy"
-      policy_id: "{{ windows_edr_policy_id }}"
+      name: "system-integration"
+      policy_id: "{{ windows_policy_id }}"
       package:
-        name: "endpoint"
+        name: "system"
         version: "latest"
-      inputs:
-        - type: "endpoint"
-          enabled: true
-          streams: []
-          config:
-            policy:
-              value:
-                windows:
-                  malware:
-                    mode: "prevent"
-                  ransomware:
-                    mode: "prevent"
-                  memory_protection:
-                    mode: "prevent"
-                  behavior_protection:
-                    mode: "prevent"
-                  popup:
-                    malware:
-                      enabled: true
-                    ransomware:
-                      enabled: true
-                  antivirus_registration:
-                    enabled: true
-                  attack_surface_reduction:
-                    credential_hardening:
-                      enabled: true
-  register: endpoint_integration
+  register: system_integration
+  failed_when: false
+
+- name: Add Windows integration to Windows policy
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
+    body_format: json
+    body:
+      name: "windows-integration"
+      policy_id: "{{ windows_policy_id }}"
+      package:
+        name: "windows"
+        version: "latest"
+  register: windows_integration
   failed_when: false
 
 - name: Install Fleet Server locally
@@ -234,9 +209,30 @@
     seconds: 30
   when: fleet_server_install.rc == 0
 
-- name: Store Windows EDR policy information for agent installation
-  set_fact:
-    windows_agent_policy: "{{ windows_edr_policy }}"
+- name: Display detection rules installation instructions
+  debug:
+    msg:
+      - "==============================================="
+      - "📋 DETECTION RULES INSTALLATION:"
+      - "==============================================="
+      - "Prebuilt detection rules must be installed manually:"
+      - "1. Navigate to Security → Detection rules (SIEM)"
+      - "2. Click 'Add Elastic rules'"
+      - "3. Click 'Install all' or select specific rules"
+      - "4. Enable the rules you want to use"
+      - "==============================================="
+
+- name: Verify Kibana health
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/status"
+    method: GET
+  register: kibana_final_health
+
+- name: Debug network interfaces
+  debug:
+    msg: "Interface {{ item }}: {{ hostvars[inventory_hostname]['ansible_' + item].ipv4.address | default('no IP') }}"
+  loop: "{{ ansible_interfaces }}"
+  when: hostvars[inventory_hostname]['ansible_' + item].ipv4 is defined
 
 - name: Find host-only network IP
   set_fact:
@@ -257,15 +253,15 @@
     elastic_vm_ip: "{{ ansible_default_ipv4.address }}"
     elastic_host_only_ip: "{{ host_only_candidates[0] if host_only_candidates else ansible_default_ipv4.address }}"
 
-- name: Display comprehensive EDR setup information
+- name: Display comprehensive access information
   debug:
     msg:
       - "==============================================="
-      - "🛡️  ELASTIC EDR INSTALLATION COMPLETE! 🛡️"
+      - "🚀 ELASTIC STACK INSTALLATION COMPLETE! 🚀"
       - "==============================================="
       - ""
       - "📊 ACCESS INFORMATION:"
-      - "• Kibana EDR Console: http://{{ elastic_host_only_ip }}:{{ kibana_port }}"
+      - "• Kibana Web UI: http://{{ elastic_host_only_ip }}:{{ kibana_port }}"
       - "• Elasticsearch API: http://{{ elastic_host_only_ip }}:9200"
       - "• Fleet Server: http://{{ elastic_host_only_ip }}:8220"
       - "• From Host (Port Forward): http://localhost:{{ kibana_port }} (if configured)"
@@ -274,24 +270,21 @@
       - "• Username: elastic"
       - "• Password: elastic"
       - ""
-      - "🛡️ EDR FEATURES:"
-      - "• Endpoint Protection: Malware & Ransomware Prevention"
-      - "• Real-time Process Monitoring"
-      - "• Memory Protection & Behavior Analysis"
-      - "• Attack Surface Reduction"
-      - "• Threat Hunting & Investigation"
+      - "🔍 DATA EXPLORATION:"
+      - "• Raw Logs: Analytics → Discover"
+      - "• Fleet Management: Fleet → Agents"
+      - "• Index Management: Management → Stack Management → Index Management"
+      - "• Detection Rules: Security → Detection rules (install manually via UI)"
       - ""
-      - "🔍 EDR MANAGEMENT:"
-      - "• Endpoint Management: Fleet → Agents"
-      - "• Security Events: Security → Explore"
-      - "• Detections: Security → Detections"
-      - "• Cases: Security → Cases"
-      - "• Host Details: Security → Explore → Hosts"
+      - "📊 SERVICE STATUS:"
+      - "• Elasticsearch: {{ es_health.json.status | default('Unknown') }}"
+      - "• Kibana: {{ 'Healthy' if kibana_final_health.status == 200 else 'Issue detected' }}"
+      - "• Fleet Server: {{ 'Configured' if fleet_setup.status == 200 else 'Setup required' }}"
       - ""
       - "💡 QUICK START:"
       - "1. Open http://{{ elastic_host_only_ip }}:{{ kibana_port }}"
       - "2. Login with elastic/elastic"
-      - "3. Go to Fleet → Agents to verify Windows EDR agents enrollment"
-      - "4. Go to Security → Explore for endpoint investigation"
-      - "5. Go to Security → Detections for threat detection rules"
+      - "3. Go to Analytics → Dashboard for security insights"
+      - "4. Go to Fleet → Agents to verify Windows agents enrollment"
+      - "5. Go to Security → Detection rules to install prebuilt rules"
       - "==============================================="

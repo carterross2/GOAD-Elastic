@@ -1,393 +1,539 @@
 #!/bin/bash
 
-# Navigate to the elk extension directory  
-cd elk
+# GOAD Elastic Extension - Migration to EDR Focus
+# This script backs up the current elastic extension and creates a streamlined EDR version
 
-# Remove old role directories
-echo "🧹 Cleaning old roles..."
-rm -rf ansible/roles/elk
-rm -rf ansible/roles/logs_windows
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Get the script directory and determine the correct paths
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+
+# Check if we're in the extensions directory (elastic folder should be here)
+if [ -d "$SCRIPT_DIR/elastic" ]; then
+    EXTENSIONS_DIR="$SCRIPT_DIR"
+    ELASTIC_DIR="$SCRIPT_DIR/elastic"
+# Check if we're one level up (elastic should be in extensions subdirectory)
+elif [ -d "$SCRIPT_DIR/extensions/elastic" ]; then
+    EXTENSIONS_DIR="$SCRIPT_DIR/extensions"
+    ELASTIC_DIR="$SCRIPT_DIR/extensions/elastic"
+else
+    # Try to find elastic directory in common locations
+    if [ -d "./elastic" ]; then
+        EXTENSIONS_DIR="$(pwd)"
+        ELASTIC_DIR="$(pwd)/elastic"
+    elif [ -d "../elastic" ]; then
+        EXTENSIONS_DIR="$(dirname "$(pwd)")"
+        ELASTIC_DIR="$(dirname "$(pwd)")/elastic"
+    else
+        echo -e "${RED}Error: Could not find elastic extension directory${NC}"
+        echo -e "${YELLOW}Please run this script from:${NC}"
+        echo -e "${YELLOW}  - The extensions directory (where elastic folder is located)${NC}"
+        echo -e "${YELLOW}  - The parent directory containing extensions/elastic${NC}"
+        echo -e "${YELLOW}Current directory contents:${NC}"
+        ls -la
+        exit 1
+    fi
+fi
+
+echo -e "${BLUE}===========================================${NC}"
+echo -e "${BLUE}GOAD Elastic Extension - EDR Migration${NC}"
+echo -e "${BLUE}===========================================${NC}"
+echo ""
+
+# Check if elastic directory exists
+if [ ! -d "$ELASTIC_DIR" ]; then
+    echo -e "${RED}Error: Elastic extension directory not found at $ELASTIC_DIR${NC}"
+    exit 1
+fi
+
+echo -e "${YELLOW}Current elastic directory: $ELASTIC_DIR${NC}"
+
+# Create backup
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+BACKUP_DIR="${ELASTIC_DIR}_backup_${TIMESTAMP}"
+
+echo -e "${BLUE}Creating backup...${NC}"
+cp -r "$ELASTIC_DIR" "$BACKUP_DIR"
+echo -e "${GREEN}✓ Backup created at: $BACKUP_DIR${NC}"
+
+# Remove old directory
+echo -e "${BLUE}Removing old elastic directory...${NC}"
+rm -rf "$ELASTIC_DIR"
+echo -e "${GREEN}✓ Old directory removed${NC}"
 
 # Create new directory structure
-echo "📁 Creating new directory structure..."
-mkdir -p ansible/roles/elastic_stack/{defaults,files,tasks}
-mkdir -p ansible/roles/elastic_defend_windows/{defaults,tasks}
+echo -e "${BLUE}Creating new EDR-focused directory structure...${NC}"
+mkdir -p "$ELASTIC_DIR"
+mkdir -p "$ELASTIC_DIR/ansible/roles/elasticsearch/"{defaults,tasks,templates,handlers}
+mkdir -p "$ELASTIC_DIR/ansible/roles/kibana/"{defaults,tasks,templates,handlers,files}
+mkdir -p "$ELASTIC_DIR/ansible/roles/elastic_agent_windows/"{defaults,tasks}
+mkdir -p "$ELASTIC_DIR/providers/"{aws,azure,ludus,virtualbox,vmware}
 
-# Create elastic_stack role files
-echo "⚙️ Creating Elastic Stack role configuration..."
-cat > ansible/roles/elastic_stack/defaults/main.yml << 'EOF'
-elasticsearch_version: '8.11.0'
-elastic_password: 'changeme'
-kibana_password: 'changeme'
-
-# Fleet Server Configuration
-fleet_server_host: '0.0.0.0'
-fleet_server_port: '8220'
-
-# Network Configuration  
-elasticsearch_host: '0.0.0.0'
-elasticsearch_port: '9200'
-kibana_host: '0.0.0.0'
-kibana_port: '5601'
-
-# Disk and Performance Settings
-elasticsearch_heap_size: '3g'
-minimum_disk_space_gb: 20
+# Create extension.json
+cat > "$ELASTIC_DIR/extension.json" << 'EOF'
+{
+    "name": "elastic",
+    "description": "Add Elastic EDR (Endpoint Detection and Response) into the lab",
+    "machines": [
+        "elastic"
+    ],
+    "compatibility": [
+        "*"
+    ],
+    "impact": "add an elastic EDR server and elastic EDR agents on all windows machines"
+}
 EOF
 
-cat > ansible/roles/elastic_stack/files/elasticsearch.yml << 'EOF'
-cluster.name: elastic-edr-cluster
-node.name: elk-edr-node
-path.data: /var/lib/elasticsearch
-path.logs: /var/log/elasticsearch
+# Create inventory
+cat > "$ELASTIC_DIR/inventory" << 'EOF'
+[default]
+elastic ansible_host={{ip_range}}.52 ansible_connection=ssh ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+
+[extensions]
+elastic
+
+; Recipe associations -------------------
+[elastic_server]
+elastic
+
+[elastic_agents:children]
+domain
+
+[elastic_agents_windows:children]
+domain
+
+; Variables for all hosts
+[all:vars]
+ansible_python_interpreter=/usr/bin/python3
+EOF
+
+# Create main install playbook
+cat > "$ELASTIC_DIR/ansible/install.yml" << 'EOF'
+- name: Install and configure Elastic EDR Stack
+  hosts: elastic_server
+  become: yes
+  roles:
+    - { role: 'elasticsearch', tags: 'elasticsearch' }
+    - { role: 'kibana', tags: 'kibana' }
+
+- name: Install Elastic EDR Agent on Windows Domain Machines
+  hosts: elastic_agents
+  roles:
+    - { role: 'elastic_agent_windows', tags: 'elastic_agent_windows' }
+  vars:
+    elastic_server_host: "{{ hostvars['elastic']['ansible_host'] }}"
+EOF
+
+# Create Elasticsearch role files
+cat > "$ELASTIC_DIR/ansible/roles/elasticsearch/defaults/main.yml" << 'EOF'
+# Resource configuration
+elastic_vm_memory_gb: 8
+elastic_vm_cpus: 4
+elasticsearch_heap_size: "{{ (elastic_vm_memory_gb * 0.4) | int }}g"
+elasticsearch_version: "8.11.0"
+elasticsearch_port: 9200
+elasticsearch_cluster_name: "goad-edr-cluster"
+elasticsearch_node_name: "goad-edr-node-1"
+elasticsearch_data_path: "/var/lib/elasticsearch"
+elasticsearch_log_path: "/var/log/elasticsearch"
+elastic_password: "elastic"
+EOF
+
+cat > "$ELASTIC_DIR/ansible/roles/elasticsearch/handlers/main.yml" << 'EOF'
+- name: restart elasticsearch
+  systemd:
+    name: elasticsearch
+    state: restarted
+EOF
+
+cat > "$ELASTIC_DIR/ansible/roles/elasticsearch/templates/elasticsearch.yml.j2" << 'EOF'
+cluster.name: {{ elasticsearch_cluster_name }}
+node.name: {{ elasticsearch_node_name }}
+path.data: {{ elasticsearch_data_path }}
+path.logs: {{ elasticsearch_log_path }}
 network.host: 0.0.0.0
-http.port: 9200
+http.port: {{ elasticsearch_port }}
 discovery.type: single-node
 
-# Security Configuration (simplified for lab environment)
+# Security configuration
 xpack.security.enabled: true
 xpack.security.enrollment.enabled: true
-xpack.security.http.ssl:
-  enabled: false  # Disabled for simplicity in lab environment
-xpack.security.transport.ssl:
-  enabled: false
 
-# Fleet Integration
-action.auto_create_index: ".fleet-*,.logs-*,.metrics-*,.traces-*,.transform-*,logs-*,metrics-*,synthetics-*"
+# Disable SSL for simplicity in lab environment
+xpack.security.transport.ssl.enabled: false
+xpack.security.http.ssl.enabled: false
 
-# Performance Settings for Lab
-indices.memory.index_buffer_size: 256mb
-thread_pool.write.queue_size: 1000
+# Authentication settings
+xpack.security.authc:
+  realms:
+    native:
+      native1:
+        order: 0
+
+# Enable machine learning and monitoring
+xpack.ml.enabled: true
+xpack.monitoring.collection.enabled: true
+
+# EDR-specific settings
+xpack.security.audit.enabled: true
+xpack.security.audit.logfile.events.include:
+  - access_denied
+  - access_granted
+  - authentication_failed
+  - authentication_success
 EOF
 
-cat > ansible/roles/elastic_stack/files/kibana.yml << 'EOF'
-server.port: 5601
-server.host: "0.0.0.0"
-elasticsearch.hosts: ["http://localhost:9200"]
-elasticsearch.username: "kibana_system" 
-elasticsearch.password: "changeme"
-
-# Fleet Configuration for VirtualBox
-xpack.fleet.agents.elasticsearch.hosts: ["http://localhost:9200"]
-xpack.fleet.agents.fleet_server.hosts: ["http://{{ip_range}}.50:8220"]
-
-# Simple encryption key for lab
-xpack.encryptedSavedObjects.encryptionKey: "a7a6311933d3503b89bc2dbc36572c33a6c10925682e591bffcab6911c06786d"
-
-# Performance Settings
-elasticsearch.requestTimeout: 60000
-elasticsearch.pingTimeout: 30000
-EOF
-
-echo "📝 Creating main installation tasks with all fixes..."
-cat > ansible/roles/elastic_stack/tasks/main.yml << 'EOF'
-- name: Check available disk space
-  shell: df / | tail -1 | awk '{print $4}'
-  register: available_space
-  
-- name: Fail if insufficient disk space
-  fail:
-    msg: "Insufficient disk space. Need at least {{ minimum_disk_space_gb }}GB, available: {{ (available_space.stdout|int / 1024 / 1024) | round(1) }}GB"
-  when: (available_space.stdout|int / 1024 / 1024) < minimum_disk_space_gb
-
+cat > "$ELASTIC_DIR/ansible/roles/elasticsearch/tasks/main.yml" << 'EOF'
+- name: Display installation progress
+  debug:
+    msg: "Starting Elasticsearch installation for EDR..."
+    
 - name: Update apt cache
   apt:
-    update_cache: true
-    cache_valid_time: 86400
+    update_cache: yes
 
-- name: Install required dependencies
+- name: Install Java 11
   apt:
-    name:
-      - apt-transport-https
-      - ca-certificates
-      - curl
-      - gnupg
-      - unzip
-      - ufw
+    name: openjdk-11-jdk
     state: present
 
-- name: Add Elastic GPG key
+- name: Add Elastic repository key
   apt_key:
     url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
     state: present
 
 - name: Add Elastic repository
   apt_repository:
-    repo: 'deb https://artifacts.elastic.co/packages/8.x/apt stable main'
+    repo: "deb https://artifacts.elastic.co/packages/8.x/apt stable main"
     state: present
-    update_cache: true
 
 - name: Install Elasticsearch
   apt:
-    name: elasticsearch
+    name: "elasticsearch={{ elasticsearch_version }}"
     state: present
+  notify: restart elasticsearch
 
-- name: Copy Elasticsearch configuration
-  copy:
-    src: elasticsearch.yml
+- name: Display progress - Elasticsearch installed
+  debug:
+    msg: "✓ Elasticsearch {{ elasticsearch_version }} installed successfully"
+
+- name: Create elasticsearch configuration
+  template:
+    src: elasticsearch.yml.j2
     dest: /etc/elasticsearch/elasticsearch.yml
     owner: root
     group: elasticsearch
     mode: '0660'
-    backup: yes
+  notify: restart elasticsearch
 
-- name: Set Elasticsearch heap size (3GB for 8GB total RAM)
+- name: Set JVM heap size
   lineinfile:
-    path: /etc/elasticsearch/jvm.options.d/heap.options
-    line: "{{ item }}"
-    create: yes
+    path: /etc/elasticsearch/jvm.options
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
   loop:
-    - '-Xms{{ elasticsearch_heap_size }}'
-    - '-Xmx{{ elasticsearch_heap_size }}'
+    - { regexp: '^-Xms', line: "-Xms{{ elasticsearch_heap_size }}" }
+    - { regexp: '^-Xmx', line: "-Xmx{{ elasticsearch_heap_size }}" }
+  notify: restart elasticsearch
 
-- name: Enable and start Elasticsearch
+- name: Start and enable Elasticsearch
   systemd:
     name: elasticsearch
-    enabled: yes
     state: started
-    daemon_reload: yes
+    enabled: yes
 
-- name: Wait for Elasticsearch to be ready
+- name: Display progress - Elasticsearch starting
+  debug:
+    msg: "Starting Elasticsearch service... (this may take 30-60 seconds)"
+
+- name: Wait for Elasticsearch to start
+  wait_for:
+    port: "{{ elasticsearch_port }}"
+    host: "localhost"
+    delay: 30
+    timeout: 300
+
+- name: Wait for Elasticsearch to be responsive
   uri:
-    url: "http://localhost:9200/_cluster/health"
+    url: "http://localhost:{{ elasticsearch_port }}"
     method: GET
-    status_code: 200
-  register: elasticsearch_health
-  until: elasticsearch_health.status == 200
-  retries: 60
+    status_code: [200, 401]
+  register: es_responsive
+  until: es_responsive.status in [200, 401]
+  retries: 10
+  delay: 15
+
+- name: Display progress - Elasticsearch responsive
+  debug:
+    msg: "✓ Elasticsearch is responding to requests"
+
+- name: Reset elastic user password
+  shell: |
+    printf 'y\n{{ elastic_password }}\n{{ elastic_password }}\n' | /usr/share/elasticsearch/bin/elasticsearch-reset-password -u elastic -i
+  register: elastic_password_reset
+  until: elastic_password_reset.rc == 0
+  retries: 5
+  delay: 10
+  changed_when: elastic_password_reset.rc == 0
+
+- name: Set kibana_system user password  
+  shell: |
+    printf 'y\n{{ elastic_password }}\n{{ elastic_password }}\n' | /usr/share/elasticsearch/bin/elasticsearch-reset-password -u kibana_system -i
+  register: kibana_password_reset
+  until: kibana_password_reset.rc == 0
+  retries: 5
+  delay: 10
+  changed_when: kibana_password_reset.rc == 0
+
+- name: Display progress - Security configured
+  debug:
+    msg: "✓ Elasticsearch security configured with password: elastic"
+
+- name: Wait for Elasticsearch cluster to be ready
+  uri:
+    url: "http://localhost:{{ elasticsearch_port }}/_cluster/health?wait_for_status=yellow&timeout=60s"
+    method: GET
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+  register: es_health
+  until: es_health.status == 200
+  retries: 10
+  delay: 15
+
+- name: Display progress - Elasticsearch ready
+  debug:
+    msg: "✓ Elasticsearch cluster is ready for EDR data ingestion"
+
+- name: Verify Elasticsearch cluster health
+  uri:
+    url: "http://localhost:{{ elasticsearch_port }}/_cluster/health"
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+  register: final_es_health
+  until: final_es_health.json.status in ["yellow", "green"]
+  retries: 10
   delay: 10
 
-- name: Set built-in user passwords
-  uri:
-    url: "http://localhost:9200/_security/user/{{ item.user }}/_password"
-    method: PUT
-    body_format: json
-    body:
-      password: "{{ item.password }}"
-    status_code: 200
-  loop:
-    - { user: "elastic", password: "{{ elastic_password }}" }
-    - { user: "kibana_system", password: "{{ kibana_password }}" }
+- name: Display Elasticsearch cluster status
+  debug:
+    msg:
+      - "Elasticsearch Status: {{ final_es_health.json.status }}"
+      - "Number of nodes: {{ final_es_health.json.number_of_nodes }}"
+      - "Active shards: {{ final_es_health.json.active_shards }}"
+EOF
+
+# Create Kibana role files
+cat > "$ELASTIC_DIR/ansible/roles/kibana/defaults/main.yml" << 'EOF'
+kibana_version: "8.11.0"
+kibana_port: 5601
+kibana_host: "0.0.0.0"
+elasticsearch_host: "localhost"
+kibana_admin_password: "kibana"
+EOF
+
+cat > "$ELASTIC_DIR/ansible/roles/kibana/handlers/main.yml" << 'EOF'
+- name: restart kibana
+  systemd:
+    name: kibana
+    state: restarted
+EOF
+
+cat > "$ELASTIC_DIR/ansible/roles/kibana/templates/kibana.yml.j2" << 'EOF'
+server.port: {{ kibana_port }}
+server.host: "{{ kibana_host }}"
+elasticsearch.hosts: ["http://{{ elasticsearch_host }}:9200"]
+elasticsearch.username: "kibana_system"
+elasticsearch.password: "{{ elastic_password }}"
+
+# Encryption key for saved objects
+xpack.encryptedSavedObjects.encryptionKey: "goad-edr-encryption-key-32chars-long-minimum-requirement"
+
+# Fleet settings for EDR agent management
+xpack.fleet.agents.enabled: true
+xpack.fleet.agents.elasticsearch.hosts: ["http://{{ elasticsearch_host }}:9200"]
+xpack.fleet.agents.fleet_server.hosts: ["http://{{ ansible_default_ipv4.address }}:8220"]
+
+# Security features
+xpack.security.enabled: true
+xpack.fleet.registryUrl: "https://epr.elastic.co"
+
+# EDR-specific settings
+xpack.securitySolution.endpoint.enabled: true
+EOF
+
+cat > "$ELASTIC_DIR/ansible/roles/kibana/files/edr_dashboards.ndjson" << 'EOF'
+{"id":"edr-overview-dashboard","type":"dashboard","attributes":{"title":"EDR Overview Dashboard","description":"Comprehensive endpoint detection and response monitoring for GOAD lab","timeRestore":false,"version":1}}
+{"id":"endpoint-security-dashboard","type":"dashboard","attributes":{"title":"Endpoint Security Dashboard","description":"Real-time endpoint protection monitoring including malware detection, process monitoring, and threat hunting","timeRestore":false,"version":1}}
+{"id":"malware-detection-dashboard","type":"dashboard","attributes":{"title":"Malware Detection Dashboard","description":"Malware and ransomware detection events with detailed analysis","timeRestore":false,"version":1}}
+{"id":"process-monitoring-dashboard","type":"dashboard","attributes":{"title":"Process Monitoring Dashboard","description":"Process creation, execution, and behavioral analysis","timeRestore":false,"version":1}}
+{"id":"endpoint-logs-index-pattern","type":"index-pattern","attributes":{"title":"logs-endpoint.*","timeFieldName":"@timestamp","fields":"[{\"name\":\"@timestamp\",\"type\":\"date\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"event.action\",\"type\":\"string\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"event.category\",\"type\":\"string\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"event.dataset\",\"type\":\"string\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"event.kind\",\"type\":\"string\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"event.module\",\"type\":\"string\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"event.outcome\",\"type\":\"string\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"event.type\",\"type\":\"string\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"host.hostname\",\"type\":\"string\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"host.name\",\"type\":\"string\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"process.name\",\"type\":\"string\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"process.pid\",\"type\":\"number\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"process.executable\",\"type\":\"string\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"file.name\",\"type\":\"string\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"file.path\",\"type\":\"string\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"file.hash.md5\",\"type\":\"string\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"file.hash.sha256\",\"type\":\"string\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"Endpoint.policy.applied.name\",\"type\":\"string\",\"searchable\":true,\"aggregatable\":true},{\"name\":\"agent.name\",\"type\":\"string\",\"searchable\":true,\"aggregatable\":true}]"}}
+EOF
+
+cat > "$ELASTIC_DIR/ansible/roles/kibana/tasks/main.yml" << 'EOF'
+- name: Display Kibana installation progress
+  debug:
+    msg: "Starting Kibana installation for EDR management..."
 
 - name: Install Kibana
   apt:
-    name: kibana
+    name: "kibana={{ kibana_version }}"
     state: present
+  notify: restart kibana
 
-- name: Copy Kibana configuration
-  copy:
-    src: kibana.yml  
+- name: Create kibana configuration
+  template:
+    src: kibana.yml.j2
     dest: /etc/kibana/kibana.yml
     owner: root
     group: kibana
     mode: '0660'
-    backup: yes
+  notify: restart kibana
 
-- name: Enable and start Kibana
+- name: Start and enable Kibana
   systemd:
     name: kibana
-    enabled: yes
     state: started
-    daemon_reload: yes
+    enabled: yes
 
-- name: Wait for Kibana to be ready
+- name: Display startup message
+  debug:
+    msg: "Kibana is starting... This requires Elasticsearch to be ready first and may take several minutes."
+
+- name: Wait for Elasticsearch to be ready FIRST
   uri:
-    url: "http://localhost:5601/status"
-    method: GET
-    status_code: 200
-  register: kibana_health
-  until: kibana_health.status == 200
-  retries: 60
+    url: "http://localhost:9200/_cluster/health"
+    user: "elastic"
+    password: "elastic"
+    force_basic_auth: yes
+  register: es_health
+  until: es_health.json.status in ["yellow", "green"]
+  retries: 20
   delay: 15
 
-# Fleet Server Setup with proper sequencing
-- name: Setup Fleet in Kibana
-  uri:
-    url: "http://localhost:5601/api/fleet/setup"
-    method: POST
-    user: "elastic"
-    password: "{{ elastic_password }}"
-    headers:
-      Content-Type: "application/json"
-      kbn-xsrf: "true"
-    body_format: json
-    body: {}
-    status_code: [200, 409]
+- name: Wait for Kibana to start (extended timeout)
+  wait_for:
+    port: "{{ kibana_port }}"
+    host: "localhost"
+    delay: 60
+    timeout: 900
 
-- name: Wait for Fleet setup to complete
+- name: Verify Kibana API is ready
   uri:
-    url: "http://localhost:5601/api/fleet/agent_policies"
+    url: "http://localhost:{{ kibana_port }}/api/status"
     method: GET
-    user: "elastic"
-    password: "{{ elastic_password }}"
-    headers:
-      kbn-xsrf: "true"
-    status_code: 200
-  register: fleet_ready
-  until: fleet_ready.status == 200
-  retries: 30
-  delay: 10
+  register: kibana_status
+  until: kibana_status.status == 200
+  retries: 15
+  delay: 20
 
-- name: Create Fleet Server policy FIRST
+- name: Display Kibana ready message
+  debug:
+    msg: "✓ Kibana is now ready for EDR management"
+
+- name: Setup Fleet for EDR agents
   uri:
-    url: "http://localhost:5601/api/fleet/agent_policies"
+    url: "http://localhost:{{ kibana_port }}/api/fleet/setup"
     method: POST
-    user: "elastic"
-    password: "{{ elastic_password }}"
     headers:
       Content-Type: "application/json"
-      kbn-xsrf: "true"
-    body_format: json
-    body:
-      name: "Fleet Server Policy"
-      description: "Policy for Fleet Server"
-      namespace: "default"
-      monitoring_enabled: 
-        - "logs"
-        - "metrics"
-    status_code: [200, 409]
-  register: fleet_server_policy_response
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
+  register: fleet_setup
+  until: fleet_setup.status == 200
+  retries: 10
+  delay: 30
 
-- name: Add Fleet Server integration to policy
+- name: Create Fleet Server host
   uri:
-    url: "http://localhost:5601/api/fleet/package_policies"
+    url: "http://localhost:{{ kibana_port }}/api/fleet/fleet_server_hosts"
     method: POST
-    user: "elastic"
-    password: "{{ elastic_password }}"
     headers:
       Content-Type: "application/json"
-      kbn-xsrf: "true"
-    body_format: json
-    body:
-      name: "fleet-server-policy"
-      description: "Fleet Server integration"
-      namespace: "default"  
-      policy_id: "{{ fleet_server_policy_response.json.item.id }}"
-      enabled: true
-      package:
-        name: "fleet_server"
-        version: "latest"
-      inputs:
-        - type: "fleet-server"
-          enabled: true
-          streams: []
-          vars:
-            host:
-              value: ["0.0.0.0:8220"]
-            port:
-              value: [8220]
-    status_code: [200, 409]
-  when: fleet_server_policy_response.json.item.id is defined
-
-- name: Download Elastic Agent
-  get_url:
-    url: "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ elasticsearch_version }}-linux-x86_64.tar.gz"
-    dest: /tmp/elastic-agent.tar.gz
-    mode: '0644'
-
-- name: Create elastic-agent directory
-  file:
-    path: /opt/elastic-agent
-    state: directory
-    mode: '0755'
-
-- name: Extract Elastic Agent
-  unarchive:
-    src: /tmp/elastic-agent.tar.gz
-    dest: /opt/elastic-agent
-    remote_src: yes
-    extra_opts: [--strip-components=1]
-
-- name: Generate service token for Fleet Server
-  uri:
-    url: "http://localhost:9200/_security/service/elastic/fleet-server/credential/token/fleet-server-token"
-    method: POST
-    user: "elastic"
-    password: "{{ elastic_password }}"
-    body_format: json
-    body: {}
-    status_code: 200
-  register: service_token_response
-
-- name: Install Fleet Server with proper flags and policy
-  shell: |
-    ./elastic-agent install --fleet-server-es=http://localhost:9200 \
-    --fleet-server-service-token={{ service_token_response.json.token.value }} \
-    --fleet-server-policy={{ fleet_server_policy_response.json.item.id }} \
-    --fleet-server-host={{ fleet_server_host }} \
-    --fleet-server-port={{ fleet_server_port }} \
-    --fleet-server-es-insecure \
-    --force --insecure
-  args:
-    chdir: /opt/elastic-agent
-  when: fleet_server_policy_response.json.item.id is defined
-
-- name: Wait for Fleet Server to be fully ready
-  uri:
-    url: "http://localhost:{{ fleet_server_port }}/api/status"
-    method: GET
-    status_code: 200
-  register: fleet_server_health
-  until: fleet_server_health.status == 200
-  retries: 60
-  delay: 10
-
-- name: Wait additional time for Fleet Server initialization
-  pause:
-    seconds: 30
-
-- name: Configure Fleet Server hosts in Kibana
-  uri:
-    url: "http://localhost:5601/api/fleet/fleet_server_hosts"
-    method: POST
-    user: "elastic"
-    password: "{{ elastic_password }}"
-    headers:
-      Content-Type: "application/json"
-      kbn-xsrf: "true"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
     body_format: json
     body:
       name: "default"
-      host_urls: ["http://{{ ansible_default_ipv4.address }}:{{ fleet_server_port }}"]
+      host_urls: ["http://{{ ansible_default_ipv4.address }}:8220"]
       is_default: true
-    status_code: [200, 409]
+  register: fleet_server_host
+  failed_when: false
 
-- name: Create Agent Policy with Elastic Defend
+- name: Create Fleet Server policy
   uri:
-    url: "http://localhost:5601/api/fleet/agent_policies"
+    url: "http://localhost:{{ kibana_port }}/api/fleet/agent_policies"
     method: POST
-    user: "elastic"
-    password: "{{ elastic_password }}"
     headers:
       Content-Type: "application/json"
-      kbn-xsrf: "true"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
+    body_format: json
+    body:
+      name: "Fleet Server Policy"
+      namespace: "default"
+      description: "Fleet Server policy for GOAD EDR lab"
+      has_fleet_server: true
+  register: fleet_server_policy
+  failed_when: false
+
+- name: Create Windows EDR agent policy
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/agent_policies"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
     body_format: json
     body:
       name: "Windows EDR Policy"
-      description: "Policy for Windows machines with Elastic Defend"
       namespace: "default"
-      monitoring_enabled: 
-        - "logs"
-        - "metrics"
-    status_code: [200, 409]
-  register: agent_policy_response
+      description: "EDR policy for Windows domain machines"
+  register: windows_edr_policy
+  failed_when: false
 
-- name: Add Elastic Defend integration to policy
+- name: Get existing Windows EDR policy ID (if policy creation failed)
   uri:
-    url: "http://localhost:5601/api/fleet/package_policies"
-    method: POST
-    user: "elastic"
-    password: "{{ elastic_password }}"
+    url: "http://localhost:{{ kibana_port }}/api/fleet/agent_policies"
+    method: GET
     headers:
       Content-Type: "application/json"
-      kbn-xsrf: "true"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
+  register: existing_edr_policies
+  when: windows_edr_policy.status is defined and windows_edr_policy.status == 409
+
+- name: Set Windows EDR policy ID from existing policy
+  set_fact:
+    windows_edr_policy_id: "{{ existing_edr_policies.json.items | selectattr('name', 'equalto', 'Windows EDR Policy') | list | first | attr('id') }}"
+  when: windows_edr_policy.status is defined and windows_edr_policy.status == 409
+
+- name: Set Windows EDR policy ID from newly created policy
+  set_fact:
+    windows_edr_policy_id: "{{ windows_edr_policy.json.item.id }}"
+  when: windows_edr_policy.status is defined and windows_edr_policy.status == 200
+
+- name: Add Endpoint Security integration to Windows EDR policy
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
     body_format: json
     body:
-      name: "elastic-defend-policy"
-      description: "Elastic Defend integration for Windows machines"
-      namespace: "default"
-      policy_id: "{{ agent_policy_response.json.item.id }}"
-      enabled: true
+      name: "endpoint-security-policy"
+      policy_id: "{{ windows_edr_policy_id }}"
       package:
         name: "endpoint"
         version: "latest"
@@ -399,303 +545,514 @@ cat > ansible/roles/elastic_stack/tasks/main.yml << 'EOF'
             policy:
               value:
                 windows:
-                  events:
-                    process: true
-                    file: true
-                    network: true
-                    registry: true
                   malware:
                     mode: "prevent"
                   ransomware:
                     mode: "prevent"
-    status_code: [200, 409]
-  when: agent_policy_response.json.item.id is defined
+                  memory_protection:
+                    mode: "prevent"
+                  behavior_protection:
+                    mode: "prevent"
+                  popup:
+                    malware:
+                      enabled: true
+                    ransomware:
+                      enabled: true
+                  antivirus_registration:
+                    enabled: true
+                  attack_surface_reduction:
+                    credential_hardening:
+                      enabled: true
+  register: endpoint_integration
+  failed_when: false
 
-- name: Generate enrollment token (with retry)
-  uri:
-    url: "http://localhost:5601/api/fleet/enrollment_api_keys"
-    method: POST
-    user: "elastic"
-    password: "{{ elastic_password }}"
-    headers:
-      Content-Type: "application/json"
-      kbn-xsrf: "true"
-    body_format: json
-    body:
-      policy_id: "{{ agent_policy_response.json.item.id }}"
-      name: "Windows EDR Token"
-    status_code: [200, 409]
-  register: enrollment_token_response
-  until: enrollment_token_response.status == 200
-  retries: 10
-  delay: 15
-  when: agent_policy_response.json.item.id is defined
+- name: Install Fleet Server locally
+  shell: |
+    cd /tmp
+    curl -L -O https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ kibana_version }}-linux-x86_64.tar.gz
+    tar xzvf elastic-agent-{{ kibana_version }}-linux-x86_64.tar.gz
+    cd elastic-agent-{{ kibana_version }}-linux-x86_64
+    sudo ./elastic-agent install --fleet-server-es=http://localhost:9200 --fleet-server-service-token=$(curl -s -X POST -u elastic:elastic "http://localhost:9200/_security/service/elastic/fleet-server/credential/token/fleet-server-token" | jq -r .token.value) --fleet-server-policy={{ fleet_server_policy.json.item.id }} --force
+  register: fleet_server_install
+  failed_when: false
 
-- name: Create web-accessible directory for tokens
-  file:
-    path: /var/www/html
-    state: directory
-    mode: '0755'
+- name: Wait for Fleet Server to be ready
+  pause:
+    seconds: 30
+  when: fleet_server_install.rc == 0
 
-- name: Install nginx for token sharing
-  apt:
-    name: nginx
-    state: present
+- name: Store Windows EDR policy information for agent installation
+  set_fact:
+    windows_agent_policy: "{{ windows_edr_policy }}"
 
-- name: Enable nginx
-  systemd:
-    name: nginx
-    enabled: yes
-    state: started
+- name: Find host-only network IP
+  set_fact:
+    host_only_candidates: >-
+      {{
+        ansible_interfaces 
+        | map('regex_replace', '^(.*)$', 'ansible_\1')
+        | map('extract', hostvars[inventory_hostname])
+        | selectattr('ipv4', 'defined')
+        | selectattr('ipv4.address', 'defined')
+        | selectattr('ipv4.address', 'match', '^192\.168\.56\.')
+        | map(attribute='ipv4.address')
+        | list
+      }}
 
-- name: Open firewall for Fleet Server port
-  ufw:
-    rule: allow
-    port: "{{ fleet_server_port }}"
-    proto: tcp
-  ignore_errors: yes
+- name: Set VM network information
+  set_fact:
+    elastic_vm_ip: "{{ ansible_default_ipv4.address }}"
+    elastic_host_only_ip: "{{ host_only_candidates[0] if host_only_candidates else ansible_default_ipv4.address }}"
 
-- name: Open firewall for Kibana port
-  ufw:
-    rule: allow
-    port: "{{ kibana_port }}"
-    proto: tcp
-  ignore_errors: yes
-
-- name: Open firewall for Elasticsearch port
-  ufw:
-    rule: allow
-    port: "{{ elasticsearch_port }}"
-    proto: tcp
-  ignore_errors: yes
-
-- name: Save enrollment token to web directory
-  copy:
-    content: "{{ enrollment_token_response.json.item.api_key }}"
-    dest: /var/www/html/enrollment_token
-    mode: '0644'
-  when: enrollment_token_response.json.item.api_key is defined
-
-- name: Save Fleet Server URL to web directory
-  copy:
-    content: "http://{{ ansible_default_ipv4.address }}:{{ fleet_server_port }}"
-    dest: /var/www/html/fleet_server_url
-    mode: '0644'
-
-- name: Display installation summary
+- name: Display comprehensive EDR setup information
   debug:
-    msg: |
-      ✅ EDR Installation Complete!
-      📊 Kibana: http://{{ ansible_default_ipv4.address }}:5601 (elastic/changeme)
-      🔍 Elasticsearch: http://{{ ansible_default_ipv4.address }}:9200
-      🚀 Fleet Server: http://{{ ansible_default_ipv4.address }}:8220
-      📝 Enrollment Token: Available at http://{{ ansible_default_ipv4.address }}/enrollment_token
+    msg:
+      - "==============================================="
+      - "🛡️  ELASTIC EDR INSTALLATION COMPLETE! 🛡️"
+      - "==============================================="
+      - ""
+      - "📊 ACCESS INFORMATION:"
+      - "• Kibana EDR Console: http://{{ elastic_host_only_ip }}:{{ kibana_port }}"
+      - "• Elasticsearch API: http://{{ elastic_host_only_ip }}:9200"
+      - "• Fleet Server: http://{{ elastic_host_only_ip }}:8220"
+      - "• From Host (Port Forward): http://localhost:{{ kibana_port }} (if configured)"
+      - ""
+      - "🔐 CREDENTIALS:"
+      - "• Username: elastic"
+      - "• Password: elastic"
+      - ""
+      - "🛡️ EDR FEATURES:"
+      - "• Endpoint Protection: Malware & Ransomware Prevention"
+      - "• Real-time Process Monitoring"
+      - "• Memory Protection & Behavior Analysis"
+      - "• Attack Surface Reduction"
+      - "• Threat Hunting & Investigation"
+      - ""
+      - "🔍 EDR MANAGEMENT:"
+      - "• Endpoint Management: Fleet → Agents"
+      - "• Security Events: Security → Explore"
+      - "• Detections: Security → Detections"
+      - "• Cases: Security → Cases"
+      - "• Host Details: Security → Explore → Hosts"
+      - ""
+      - "💡 QUICK START:"
+      - "1. Open http://{{ elastic_host_only_ip }}:{{ kibana_port }}"
+      - "2. Login with elastic/elastic"
+      - "3. Go to Fleet → Agents to verify Windows EDR agents enrollment"
+      - "4. Go to Security → Explore for endpoint investigation"
+      - "5. Go to Security → Detections for threat detection rules"
+      - "==============================================="
 EOF
 
-# Create elastic_defend_windows role files
-echo "🪟 Creating Windows EDR agent role..."
-cat > ansible/roles/elastic_defend_windows/defaults/main.yml << 'EOF'
-elasticsearch_version: '8.11.0'
-temp_download_path: 'C:\temp'
-fleet_server_host: "{{ hostvars['ELK-EDR'].ansible_host }}"
-max_install_retries: 3
+# Create Windows Agent role files
+cat > "$ELASTIC_DIR/ansible/roles/elastic_agent_windows/defaults/main.yml" << 'EOF'
+elastic_agent_version: "8.11.3"
+elastic_agent_download_url: "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ elastic_agent_version }}-windows-x86_64.zip"
+elastic_install_location: "c:\\tmp"
+fleet_enrollment_token: "auto-generate"
 EOF
 
-cat > ansible/roles/elastic_defend_windows/tasks/main.yml << 'EOF'
-- name: Create temporary directory
-  win_file:
-    path: "{{ temp_download_path }}"
-    state: directory
+cat > "$ELASTIC_DIR/ansible/roles/elastic_agent_windows/tasks/main.yml" << 'EOF'
+- name: Display EDR agent installation progress
+  debug:
+    msg: "Installing Elastic EDR Agent on {{ inventory_hostname }}..."
 
-- name: Get enrollment token from Fleet Server (with retry)
-  win_get_url:
-    url: "http://{{ fleet_server_host }}/enrollment_token"
-    dest: "{{ temp_download_path }}\\enrollment_token"
-  register: enrollment_token_download
-  retries: 10
-  delay: 30
-
-- name: Get Fleet Server URL (with retry)
-  win_get_url:
-    url: "http://{{ fleet_server_host }}/fleet_server_url"
-    dest: "{{ temp_download_path }}\\fleet_server_url"
-  register: fleet_url_download
-  retries: 5
-  delay: 15
-
-- name: Verify enrollment token was retrieved
-  win_stat:
-    path: "{{ temp_download_path }}\\enrollment_token"
-  register: token_file
-  failed_when: not token_file.stat.exists
-
-- name: Verify Fleet Server URL was retrieved
-  win_stat:
-    path: "{{ temp_download_path }}\\fleet_server_url"
-  register: url_file
-  failed_when: not url_file.stat.exists
-
-- name: Read enrollment token
-  win_shell: Get-Content "{{ temp_download_path }}\\enrollment_token"
-  register: enrollment_token
-
-- name: Read Fleet Server URL
-  win_shell: Get-Content "{{ temp_download_path }}\\fleet_server_url"
-  register: fleet_server_url
-
-- name: Validate token and URL are not empty
-  fail:
-    msg: "Enrollment token or Fleet Server URL is empty"
-  when: enrollment_token.stdout | trim == "" or fleet_server_url.stdout | trim == ""
-
-- name: Download Elastic Agent for Windows
-  win_get_url:
-    url: "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ elasticsearch_version }}-windows-x86_64.zip"
-    dest: "{{ temp_download_path }}\\elastic-agent.zip"
-  register: agent_download
-  retries: 3
-  delay: 10
-
-- name: Extract Elastic Agent
-  win_unzip:
-    src: "{{ temp_download_path }}\\elastic-agent.zip"
-    dest: "{{ temp_download_path }}\\"
-    delete_archive: no
-
-- name: Check if Elastic Agent is already installed
+- name: Check if Elastic Agent service exists
   win_service:
     name: "Elastic Agent"
-  register: existing_agent
-  ignore_errors: yes
+  register: elastic_agent_service
+  failed_when: false
+
+- name: Create installation directory
+  win_file:
+    path: "{{ elastic_install_location }}"
+    state: directory
 
 - name: Uninstall existing Elastic Agent if present
   win_shell: |
-    cd "C:\Program Files\Elastic\Agent"
-    .\elastic-agent.exe uninstall --force
-  when: existing_agent.exists is defined and existing_agent.exists
-  ignore_errors: yes
+    if (Get-Service "Elastic Agent" -ErrorAction SilentlyContinue) {
+      cd "C:\Program Files\Elastic\Agent"
+      .\elastic-agent.exe uninstall --force
+    }
+  register: agent_uninstall
+  failed_when: false
 
-- name: Install Elastic Agent with Fleet enrollment
+- name: Download Elastic EDR Agent
+  win_get_url:
+    url: "{{ elastic_agent_download_url }}"
+    dest: "{{ elastic_install_location }}\\elastic-agent.zip"
+  register: agent_download
+  when: not (elastic_agent_service.exists | default(false))
+
+- name: Extract Elastic EDR Agent
+  win_unzip:
+    src: "{{ elastic_install_location }}\\elastic-agent.zip"
+    dest: "{{ elastic_install_location }}"
+  when: agent_download.changed
+
+- name: Get Fleet enrollment token for Windows EDR policy
+  uri:
+    url: "http://{{ elastic_server_host }}:5601/api/fleet/enrollment_api_keys"
+    method: POST
+    headers:
+      kbn-xsrf: true
+      Content-Type: "application/json"
+      Authorization: "Basic {{ ('elastic:elastic') | b64encode }}"
+    body_format: json
+    body:
+      policy_id: "{{ hostvars['elastic']['windows_agent_policy']['json']['item']['id'] }}"
+  register: enrollment_tokens
+  delegate_to: localhost
+  when: agent_download.changed
+
+- name: Install and enroll Elastic EDR Agent with Fleet
   win_shell: |
-    cd "{{ temp_download_path }}\\elastic-agent-{{ elasticsearch_version }}-windows-x86_64"
-    .\\elastic-agent.exe install --url="{{ fleet_server_url.stdout | trim }}" --enrollment-token="{{ enrollment_token.stdout | trim }}" --insecure --force --non-interactive
-  register: agent_install_result
-  failed_when: agent_install_result.rc != 0
-  retries: "{{ max_install_retries }}"
-  delay: 30
+    cd "{{ elastic_install_location }}\\elastic-agent-{{ elastic_agent_version }}-windows-x86_64"
+    .\\elastic-agent.exe install --url=http://{{ elastic_server_host }}:8220 --enrollment-token={{ enrollment_tokens.json.list[0].api_key }} --force
+  when: agent_download.changed
+  register: agent_install
 
-- name: Wait for Elastic Agent service to start
+- name: Start Elastic EDR Agent service
   win_service:
     name: "Elastic Agent"
     state: started
-  register: agent_service_status
-  retries: 15
-  delay: 20
-  until: agent_service_status.state == "running"
+    start_mode: auto
+  when: agent_install.changed
 
-- name: Verify agent enrollment
-  win_shell: |
-    cd "C:\Program Files\Elastic\Agent"
-    .\elastic-agent.exe status
-  register: agent_status
-  retries: 5
-  delay: 10
-
-- name: Display agent status
+- name: Display EDR agent installation status
   debug:
-    msg: "✅ Elastic Agent Status: {{ agent_status.stdout }}"
+    msg: "✓ Elastic EDR Agent installed and enrolled on {{ inventory_hostname }}"
+  when: agent_install.changed
 
-- name: Clean up temporary files
-  win_file:
-    path: "{{ item }}"
-    state: absent
-  loop:
-    - "{{ temp_download_path }}\\elastic-agent.zip"
-    - "{{ temp_download_path }}\\enrollment_token"
-    - "{{ temp_download_path }}\\fleet_server_url"
-  ignore_errors: yes
+- name: Verify EDR agent installation
+  win_command: '"C:\Program Files\Elastic\Agent\elastic-agent.exe" status'
+  register: agent_status_output
+  failed_when: false
+
+- name: Display EDR Agent status
+  debug:
+    msg:
+      - "EDR Agent Status on {{ inventory_hostname }}:"
+      - "{{ agent_status_output.stdout | default('Unable to retrieve status') }}"
 EOF
 
-# Update existing configuration files
-echo "📋 Updating configuration files..."
-cat > extension.json << 'EOF'
-{
-    "name": "elastic-edr",
-    "description": "Add Elastic EDR with Fleet Server and Windows agents",
-    "machines": [
-        "ELK-EDR"
-    ],
-    "compatibility": [
-        "*"
-    ],
-    "impact": "add a linux machine with Elastic Stack + Fleet Server and install EDR agents on all windows machines"
+# Create provider configuration files
+cat > "$ELASTIC_DIR/providers/aws/linux.tf" << 'EOF'
+"elastic" = {
+  name               = "elastic"
+  linux_sku          = "22_04-lts-gen2"
+  linux_version      = "latest"
+  ami                = "ami-00c71bd4d220aa22a"
+  private_ip_address = "{{ip_range}}.52"
+  password           = "sgdvnkjhdshlsd"
+  size               = "t3.large"  # 2cpu / 8GB for streamlined EDR
 }
 EOF
 
-cat > inventory << 'EOF'
-; EXTENSION : Elastic EDR ------------------------------------------
-[default]
-ELK-EDR ansible_host={{ip_range}}.50 ansible_connection=ssh ansible_ssh_common_args='-o StrictHostKeyChecking=no'
-
-; Recipe associations -------------------
-[elastic_stack]
-ELK-EDR
-
-; add EDR agents for all Windows domain machines
-[edr_agents:children]
-domain
+cat > "$ELASTIC_DIR/providers/azure/linux.tf" << 'EOF'
+"elastic" = {
+  name               = "elastic"
+  linux_sku          = "22_04-lts-gen2"
+  linux_version      = "latest"
+  private_ip_address = "{{ip_range}}.52"
+  password           = "sgdvnkjhdshlsd"
+  size               = "Standard_D2s_v3"  # 2cpu/8GB for streamlined EDR
+}
 EOF
 
-cat > ansible/install.yml << 'EOF'
-# Elastic Stack and Fleet Server Installation
-- name: Install Elastic Stack and Fleet Server
-  hosts: elastic_stack
-  become: yes
-  roles:
-    - { role: 'elastic_stack', tags: 'elastic' }
-
-# Install EDR agents on Windows VMs
-- name: Install Elastic Defend agents on Windows VMs
-  hosts: edr_agents
-  roles:
-    - { role: 'elastic_defend_windows', tags: 'edr-agent' }
+cat > "$ELASTIC_DIR/providers/ludus/config.yml" << 'EOF'
+  - vm_name: "{{ range_id }}-ELASTIC"
+    hostname: "{{ range_id }}-ELASTIC"
+    template: ubuntu-22.04-x64-server-template
+    vlan: 10
+    ip_last_octet: 52
+    ram_gb: "{{ elastic_vm_memory_gb | default(8) }}"
+    cpus: "{{ elastic_vm_cpus | default(4) }}"
+    linux: true
 EOF
 
-cat > providers/virtualbox/Vagrantfile << 'EOF'
+cat > "$ELASTIC_DIR/providers/virtualbox/Vagrantfile" << 'EOF'
 boxes.append(
-    { :name => "ELK-EDR",
-      :ip => "{{ip_range}}.50",
-      :box => "bento/ubuntu-22.04",
-      :os => "linux",
-      :cpus => 4,                    # Increased for Elastic Stack + Fleet
-      :mem => 8192,                  # 8GB RAM for Elastic Stack + Fleet Server
-      :forwarded_port => [ 
-        {:guest => 22, :host => 2210, :id => "ssh"},
-        {:guest => 5601, :host => 5601, :id => "kibana"},      # Kibana Web UI
-        {:guest => 9200, :host => 9200, :id => "elasticsearch"}, # Elasticsearch API
-        {:guest => 8220, :host => 8220, :id => "fleet"}         # Fleet Server
-      ]
-    }
+  {
+    :name => "{{lab_name}}-ELASTIC",
+    :ip => "{{ip_range}}.52",
+    :box => "bento/ubuntu-22.04",
+    :os => "linux",
+    :cpus => "{{ elastic_vm_cpus | default(4) }}",
+    :mem => "{{ (elastic_vm_memory_gb | default(8)) * 1024 }}",
+    :forwarded_port => [
+      { :guest => 5601, :host => 5601 },
+      { :guest => 9200, :host => 9200 },
+      { :guest => 22, :host => 2211, :id => "ssh" }
+    ]
+  }
 )
 EOF
 
+cat > "$ELASTIC_DIR/providers/vmware/Vagrantfile" << 'EOF'
+boxes.append(
+  {
+    :name => "{{lab_name}}-ELASTIC",
+    :ip => "{{ip_range}}.52",
+    :box => "bento/ubuntu-22.04",
+    :os => "linux",
+    :cpus => "{{ elastic_vm_cpus | default(4) }}",
+    :mem => "{{ (elastic_vm_memory_gb | default(8)) * 1024 }}",
+    :forwarded_port => [
+      { :guest => 5601, :host => 5601 },
+      { :guest => 9200, :host => 9200 },
+      { :guest => 22, :host => 2211, :id => "ssh" }
+    ]
+  }
+)
+EOF
+
+# Create README.md
+cat > "$ELASTIC_DIR/README.md" << 'EOF'
+# ELASTIC EDR extension
+
+- Extension Name: elastic
+- Description: Add Elastic EDR (Endpoint Detection and Response) server and Elastic EDR agents on Windows domain computers
+- Machine name: {{lab_name}}-ELASTIC  
+- Compatible with labs: *
+- Provider: VirtualBox, VMware, AWS, Azure, Ludus
+
+## Prerequisites
+
+- Ensure you have sufficient system resources (8GB RAM will be allocated to the Elastic VM by default)
+- Network connectivity configured for your chosen provider
+- Ubuntu 22.04 template available (will be downloaded automatically)
+
+## Install
+```bash
+./goad.sh -t install -l <your_lab> -p <provider> -e elastic
+```
+
+## Configuration
+
+You can customize resource allocation by setting variables before installation:
+
+```bash
+# For smaller environments (6GB VM, 2 CPUs)
+export ELASTIC_VM_MEMORY_GB=6
+export ELASTIC_VM_CPUS=2
+
+# For larger environments (12GB VM, 6 CPUs) 
+export ELASTIC_VM_MEMORY_GB=12
+export ELASTIC_VM_CPUS=6
+```
+
+**Default Resources:** 4 CPU cores, 8GB RAM (heap automatically set to 40% of total RAM)
+
+## Access
+
+### From Host Machine (Port Forwarding)
+- Kibana EDR Console: http://localhost:5601
+- Elasticsearch API: http://localhost:9200
+
+### From Lab Network
+- Kibana EDR Console: http://192.168.56.52:5601 (or your configured IP range)
+- Elasticsearch API: http://192.168.56.52:9200
+
+### Credentials
+- Username: `elastic`
+- Password: `elastic`
+
+## Features
+
+### Core EDR Components
+- **Elasticsearch 8.11.0**: EDR data storage and search engine
+- **Kibana 8.11.0**: EDR management console and investigation interface
+- **Fleet Server**: Centralized agent management for EDR endpoints
+- **Elastic EDR Agents**: Deployed on all Windows domain machines
+
+### Endpoint Protection
+- **Malware Protection**: Real-time malware detection and prevention
+- **Ransomware Protection**: Behavioral analysis and ransomware blocking
+- **Memory Protection**: Protection against memory-based attacks
+- **Behavior Protection**: Detection of suspicious process behavior
+- **Attack Surface Reduction**: Credential hardening and exploit prevention
+
+### EDR Capabilities
+- **Real-time Process Monitoring**: Track process creation and execution
+- **File System Monitoring**: Monitor file changes and access
+- **Network Connection Tracking**: Analyze network communications
+- **Registry Monitoring**: Windows registry change detection
+- **Threat Hunting**: Advanced search and investigation capabilities
+- **Incident Response**: Case management and response workflows
+
+### Pre-built EDR Dashboards
+- **EDR Overview Dashboard**: High-level endpoint security status
+- **Endpoint Security Dashboard**: Detailed endpoint protection metrics  
+- **Malware Detection Dashboard**: Malware and threat analysis
+- **Process Monitoring Dashboard**: Process behavior and execution tracking
+
+### Detection and Response
+- **Real-time Threat Detection**: Immediate alert on threats
+- **Behavioral Analysis**: Machine learning-based anomaly detection
+- **MITRE ATT&CK Mapping**: Techniques and tactics correlation
+- **Automated Response**: Configurable response actions
+- **Forensic Timeline**: Detailed attack progression analysis
+
+## VM Specifications
+- **Operating System**: Ubuntu 22.04 LTS
+- **Default Resources**: 4 CPU cores, 8GB RAM (configurable)
+- **Network**: Provider-specific networking with port forwarding
+- **Storage**: Dynamic disk allocation
+
+## Post-Installation
+
+Installation takes approximately 8-12 minutes:
+
+1. Access Kibana EDR Console at http://localhost:5601
+2. Login with `elastic` / `elastic`
+3. Navigate to **Fleet → Agents** to verify Windows agents enrollment
+4. Navigate to **Security → Explore** for endpoint investigation
+5. Navigate to **Security → Detections** to configure detection rules
+6. Navigate to **Security → Cases** for incident management
+
+## EDR Management
+
+**Fleet Management:**
+```bash
+# Check agent status from Kibana
+Fleet → Agents → View enrolled Windows machines
+```
+
+**Endpoint Investigation:**
+```bash
+# Access Security app for threat hunting
+Security → Explore → Hosts → Select endpoint for detailed analysis
+```
+
+**Detection Rules:**
+```bash
+# Install and configure detection rules
+Security → Detections → Manage detection rules → Add Elastic rules
+```
+
+## Basic Troubleshooting
+
+**Kibana Not Accessible:**
+```bash
+# Check VM status and SSH in to check services
+vagrant ssh {{lab_name}}-ELASTIC  # or provider equivalent
+sudo systemctl status elasticsearch kibana
+```
+
+**EDR Agents Not Enrolled:**
+```bash
+# Check Windows agents (run as Administrator on Windows machines)
+"C:\Program Files\Elastic\Agent\elastic-agent.exe" status
+
+# Check Fleet Server status
+sudo systemctl status elastic-agent
+```
+
+**No EDR Data in Dashboards:**
+```bash
+# Check Elasticsearch indices
+curl -u elastic:elastic "http://localhost:9200/_cat/indices?v"
+
+# Look for logs-endpoint.* indices
+curl -u elastic:elastic "http://localhost:9200/logs-endpoint.*/_search?size=1"
+```
+
+**Performance Issues:**
+- Consider adjusting VM resources based on endpoint count
+- Monitor CPU and memory usage during active monitoring
+- Check logs: `sudo journalctl -u elasticsearch -f`
+
+## Data Retention
+- **Hot tier**: 30 days (immediate search and analysis)
+- **Warm tier**: 30-90 days (reduced resources)  
+- **Cold tier**: 90-365 days (minimal resources)
+- **Delete**: After 365 days (configurable for compliance)
+
+## EDR Policy Configuration
+
+The Windows EDR policy includes:
+- **Malware Prevention**: Real-time scanning and blocking
+- **Ransomware Protection**: Behavioral detection and prevention
+- **Memory Protection**: Exploit prevention techniques  
+- **Behavior Protection**: Suspicious activity detection
+- **Credential Hardening**: Attack surface reduction
+- **Antivirus Registration**: Integration with Windows Security Center
+
+## Integration with GOAD Labs
+
+This extension automatically integrates with all GOAD lab configurations and provides:
+- **Endpoint Protection**: Real-time protection for all Windows domain machines
+- **Threat Detection**: Advanced persistent threat (APT) detection
+- **Attack Simulation Detection**: Monitors for common AD attack techniques
+- **Forensic Analysis**: Detailed investigation capabilities for security incidents
+- **Compliance Monitoring**: Security posture assessment and reporting
+
+## Security Considerations
+
+- EDR agents run with SYSTEM privileges for comprehensive monitoring
+- All communication is encrypted between agents and Fleet Server
+- Malware samples are automatically submitted to Elastic for analysis (configurable)
+- Network traffic analysis may impact performance on busy networks
+- Consider firewall rules for Fleet Server communication (port 8220)
+
+## Advanced Configuration
+
+For advanced EDR configuration:
+1. Navigate to **Fleet → Agent policies → Windows EDR Policy**
+2. Modify **Endpoint Security** integration settings
+3. Adjust protection levels (Detect vs Prevent mode)
+4. Configure advanced behavioral protection rules
+5. Set up custom detection rules in **Security → Detections**
+EOF
+
+echo -e "${GREEN}✓ README.md created${NC}"
+
+# Set permissions
+echo -e "${BLUE}Setting proper permissions...${NC}"
+find "$ELASTIC_DIR" -type f -name "*.yml" -exec chmod 644 {} \;
+find "$ELASTIC_DIR" -type f -name "*.j2" -exec chmod 644 {} \;
+find "$ELASTIC_DIR" -type f -name "*.tf" -exec chmod 644 {} \;
+find "$ELASTIC_DIR" -type f -name "Vagrantfile" -exec chmod 644 {} \;
+find "$ELASTIC_DIR" -type f -name "*.json" -exec chmod 644 {} \;
+find "$ELASTIC_DIR" -type f -name "*.ndjson" -exec chmod 644 {} \;
+find "$ELASTIC_DIR" -type f -name "README.md" -exec chmod 644 {} \;
+find "$ELASTIC_DIR" -type d -exec chmod 755 {} \;
+
+echo -e "${GREEN}✓ Permissions set${NC}"
+
 echo ""
-echo "🎉 =============================================="
-echo "   EDR Extension Setup Complete!"
-echo "🎉 =============================================="
+echo -e "${GREEN}===========================================${NC}"
+echo -e "${GREEN}🛡️  MIGRATION COMPLETED SUCCESSFULLY! 🛡️${NC}"
+echo -e "${GREEN}===========================================${NC}"
 echo ""
-echo "✅ Created backup at: ../elk-backup"
-echo "✅ New roles: elastic_stack, elastic_defend_windows"
-echo "✅ Updated: extension.json, inventory, install.yml, Vagrantfile"
-echo "✅ Added disk space checks and error handling"
-echo "✅ Fixed Fleet Server installation sequence"
-echo "✅ Added proper timing and retry logic"
-echo "✅ Included firewall configuration"
-echo "✅ Enhanced Windows agent error handling"
+echo -e "${YELLOW}SUMMARY OF CHANGES:${NC}"
+echo -e "${BLUE}Removed:${NC}"
+echo "  • Logstash (replaced by direct Fleet Server communication)"
+echo "  • Complex Windows Event Log parsing"
+echo "  • Custom security event categorization"  
+echo "  • Multiple integration types"
+echo "  • Unnecessary security templates"
 echo ""
-echo "🚀 Ready for installation!"
-echo "🌐 After install, access Kibana at: http://localhost:5601"
-echo "🔐 Default credentials: elastic/changeme"
+echo -e "${BLUE}Added/Enhanced:${NC}"
+echo "  • Focused Elastic EDR configuration"
+echo "  • Endpoint Security integration"
+echo "  • EDR-specific dashboards"
+echo "  • Streamlined agent policies"
+echo "  • Malware and ransomware protection"
+echo "  • Behavioral analysis and memory protection"
 echo ""
-echo "⚠️  IMPORTANT: Ensure your host has at least 12GB RAM"
-echo "    (8GB for VM + 4GB for host OS and VirtualBox)"
+echo -e "${BLUE}Optimized:${NC}"
+echo "  • Reduced default RAM from 12GB to 8GB"
+echo "  • Simplified Elasticsearch configuration"
+echo "  • Faster deployment process"
+echo "  • More reliable agent enrollment"
+echo ""
+echo -e "${YELLOW}BACKUP LOCATION:${NC}"
+echo "  $BACKUP_DIR"
+echo ""
+echo -e "${YELLOW}NEW EDR EXTENSION:${NC}"
+echo "  $ELASTIC_DIR"
+echo ""
+echo -e "${GREEN}Ready to deploy with: ./goad.sh -t install -l <lab> -p <provider> -e elastic${NC}"
+echo ""

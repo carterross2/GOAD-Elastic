@@ -1,0 +1,73 @@
+- name: Display agent installation progress
+  debug:
+    msg: "Installing Elastic Agent on {{ inventory_hostname }}..."
+
+- name: Check if Elastic Agent service exists
+  win_service:
+    name: "Elastic Agent"
+  register: elastic_agent_service
+  failed_when: false
+
+- name: Create installation directory
+  win_file:
+    path: "{{ elastic_install_location }}"
+    state: directory
+
+- name: Uninstall existing Elastic Agent if in standalone mode
+  win_shell: |
+    if (Get-Service "Elastic Agent" -ErrorAction SilentlyContinue) {
+      cd "C:\Program Files\Elastic\Agent"
+      .\elastic-agent.exe uninstall --force
+    }
+  register: agent_uninstall
+  failed_when: false
+
+- name: Download Elastic Agent
+  win_get_url:
+    url: "{{ elastic_agent_download_url }}"
+    dest: "{{ elastic_install_location }}\\elastic-agent.zip"
+  register: agent_download
+  when: not (elastic_agent_service.exists | default(false))
+
+- name: Extract Elastic Agent
+  win_unzip:
+    src: "{{ elastic_install_location }}\\elastic-agent.zip"
+    dest: "{{ elastic_install_location }}"
+  when: agent_download.changed
+
+- name: Get Fleet enrollment token for Windows policy
+  uri:
+    url: "http://{{ elastic_server_host }}:5601/api/fleet/enrollment_api_keys"
+    method: POST
+    headers:
+      kbn-xsrf: true
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      policy_id: "{{ hostvars['elastic']['windows_agent_policy']['json']['item']['id'] }}"
+  register: enrollment_tokens
+  delegate_to: localhost
+  when: agent_download.changed
+
+- name: Install and enroll Elastic Agent with Fleet
+  win_shell: |
+    cd "{{ elastic_install_location }}\\elastic-agent-{{ elastic_agent_version }}-windows-x86_64"
+    .\\elastic-agent.exe install --url=http://{{ elastic_server_host }}:8220 --enrollment-token={{ enrollment_tokens.json.list[0].api_key }} --force
+  when: agent_download.changed
+  register: agent_install
+
+- name: Start Elastic Agent service
+  win_service:
+    name: "Elastic Agent"
+    state: started
+    start_mode: auto
+  when: agent_install.changed
+
+- name: Display installation status
+  debug:
+    msg: "Elastic Agent installed and enrolled with Fleet on {{ inventory_hostname }}"
+  when: agent_install.changed
+
+- name: Verify agent installation
+  include_tasks: verify.yml
+  when: agent_install.changed

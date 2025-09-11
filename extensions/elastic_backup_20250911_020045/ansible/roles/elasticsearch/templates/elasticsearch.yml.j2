@@ -10,9 +10,16 @@ discovery.type: single-node
 xpack.security.enabled: true
 xpack.security.enrollment.enabled: true
 
-# Disable SSL for simplicity in lab environment
-xpack.security.transport.ssl.enabled: false
-xpack.security.http.ssl.enabled: false
+# Transport security (node-to-node communication)
+xpack.security.transport.ssl:
+  enabled: false
+  verification_mode: certificate
+  client_authentication: required
+
+# HTTP security (client connections)
+xpack.security.http.ssl:
+  enabled: false
+  verification_mode: certificate
 
 # Authentication settings
 xpack.security.authc:
@@ -21,14 +28,21 @@ xpack.security.authc:
       native1:
         order: 0
 
-# Enable machine learning and monitoring
-xpack.ml.enabled: true
-xpack.monitoring.collection.enabled: true
-
-# EDR-specific settings
+# Audit logging for security events
 xpack.security.audit.enabled: true
 xpack.security.audit.logfile.events.include:
   - access_denied
   - access_granted
+  - anonymous_access_denied
   - authentication_failed
   - authentication_success
+  - realm_authentication_failed
+  - tampered_request
+  - run_as_denied
+  - run_as_granted
+
+# Machine learning settings
+xpack.ml.enabled: true
+
+# Monitoring settings
+xpack.monitoring.collection.enabled: true

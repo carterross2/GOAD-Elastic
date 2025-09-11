@@ -1,11 +1,12 @@
-- name: Install and configure Elastic EDR Stack
+- name: Install and configure Elastic Stack
   hosts: elastic_server
   become: yes
   roles:
     - { role: 'elasticsearch', tags: 'elasticsearch' }
     - { role: 'kibana', tags: 'kibana' }
+    - { role: 'logstash', tags: 'logstash' }
 
-- name: Install Elastic EDR Agent on Windows Domain Machines
+- name: Install Elastic Agent on Windows Domain Machines
   hosts: elastic_agents
   roles:
     - { role: 'elastic_agent_windows', tags: 'elastic_agent_windows' }

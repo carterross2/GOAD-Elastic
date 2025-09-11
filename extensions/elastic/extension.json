@@ -1,11 +1,11 @@
 {
     "name": "elastic",
-    "description": "Add the Elastic Stack/EDR into the lab",
+    "description": "Add Elastic EDR (Endpoint Detection and Response) into the lab",
     "machines": [
         "elastic"
     ],
     "compatibility": [
         "*"
     ],
-    "impact": "add an elastic stack machine and elastic agents on all windows machines"
+    "impact": "add an elastic EDR server and elastic EDR agents on all windows machines"
 }

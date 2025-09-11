@@ -1,0 +1,11 @@
+{
+    "name": "elastic",
+    "description": "Add the Elastic Stack/EDR into the lab",
+    "machines": [
+        "elastic"
+    ],
+    "compatibility": [
+        "*"
+    ],
+    "impact": "add an elastic stack machine and elastic agents on all windows machines"
+}

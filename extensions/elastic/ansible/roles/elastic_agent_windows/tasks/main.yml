@@ -1,73 +1,164 @@
-- name: Display agent installation progress
+- name: Display EDR agent installation progress
   debug:
-    msg: "Installing Elastic Agent on {{ inventory_hostname }}..."
+    msg: "Installing Elastic EDR Agent on {{ inventory_hostname }}..."
 
-- name: Check if Elastic Agent service exists
-  win_service:
-    name: "Elastic Agent"
-  register: elastic_agent_service
+- name: Check Fleet Server connectivity
+  win_uri:
+    url: "http://{{ elastic_server_host }}:8220/api/status"
+    method: GET
+  register: fleet_server_check
   failed_when: false
+  delegate_to: "{{ inventory_hostname }}"
+
+- name: Verify Fleet Server is accessible
+  assert:
+    that:
+      - fleet_server_check.status_code == 200
+    fail_msg: |
+      ❌ Fleet Server is not accessible from {{ inventory_hostname }}
+      URL: http://{{ elastic_server_host }}:8220/api/status
+      Status: {{ fleet_server_check.status_code | default('No response') }}
+      Error: {{ fleet_server_check.msg | default('Connection failed') }}
+      
+      Please verify:
+      1. Fleet Server is running on {{ elastic_server_host }}
+      2. Port 8220 is accessible from Windows machines
+      3. Network connectivity between {{ inventory_hostname }} and {{ elastic_server_host }}
+    success_msg: "✓ Fleet Server is accessible from {{ inventory_hostname }}"
+
+- name: Check Kibana API connectivity for enrollment
+  win_uri:
+    url: "http://{{ elastic_server_host }}:5601/api/status"
+    method: GET
+  register: kibana_api_check
+  failed_when: false
+  delegate_to: "{{ inventory_hostname }}"
+
+- name: Verify Kibana API is accessible
+  assert:
+    that:
+      - kibana_api_check.status_code == 200
+    fail_msg: |
+      ❌ Kibana API is not accessible from {{ inventory_hostname }}
+      URL: http://{{ elastic_server_host }}:5601/api/status
+      Status: {{ kibana_api_check.status_code | default('No response') }}
+      
+      Please verify:
+      1. Kibana is running on {{ elastic_server_host }}
+      2. Port 5601 is accessible from Windows machines
+      3. Kibana has fully started (check kibana logs)
+    success_msg: "✓ Kibana API is accessible from {{ inventory_hostname }}"
+
+- name: Display connectivity check results
+  debug:
+    msg:
+      - "🌐 Connectivity Check Results for {{ inventory_hostname }}:"
+      - "Fleet Server ({{ elastic_server_host }}:8220): ✓ ACCESSIBLE"
+      - "Kibana API ({{ elastic_server_host }}:5601): ✓ ACCESSIBLE"
+      - "Proceeding with EDR agent installation..."
+
+- name: Display Fleet Server connectivity result
+  debug:
+    msg: "{{ fleet_connectivity.stdout_lines }}"
+
+- name: Display EDR agent installation progress
+  debug:
+    msg: "Installing Elastic EDR Agent on {{ inventory_hostname }}..."
 
 - name: Create installation directory
   win_file:
     path: "{{ elastic_install_location }}"
     state: directory
 
-- name: Uninstall existing Elastic Agent if in standalone mode
+- name: Always uninstall existing Elastic Agent (force clean install)
   win_shell: |
     if (Get-Service "Elastic Agent" -ErrorAction SilentlyContinue) {
+      Write-Output "Uninstalling existing Elastic Agent..."
       cd "C:\Program Files\Elastic\Agent"
       .\elastic-agent.exe uninstall --force
+      Start-Sleep -Seconds 15
+    } else {
+      Write-Output "No existing Elastic Agent found"
     }
   register: agent_uninstall
   failed_when: false
 
-- name: Download Elastic Agent
+- name: Display uninstall result
+  debug:
+    msg: "{{ agent_uninstall.stdout_lines }}"
+
+- name: Download Elastic EDR Agent
   win_get_url:
     url: "{{ elastic_agent_download_url }}"
     dest: "{{ elastic_install_location }}\\elastic-agent.zip"
-  register: agent_download
-  when: not (elastic_agent_service.exists | default(false))
+    force: yes
 
-- name: Extract Elastic Agent
+- name: Remove existing extracted files
+  win_file:
+    path: "{{ elastic_install_location }}\\elastic-agent-{{ elastic_agent_version }}-windows-x86_64"
+    state: absent
+
+- name: Extract Elastic EDR Agent
   win_unzip:
     src: "{{ elastic_install_location }}\\elastic-agent.zip"
     dest: "{{ elastic_install_location }}"
-  when: agent_download.changed
 
-- name: Get Fleet enrollment token for Windows policy
+- name: Get Fleet enrollment token for Windows EDR policy
   uri:
     url: "http://{{ elastic_server_host }}:5601/api/fleet/enrollment_api_keys"
     method: POST
     headers:
       kbn-xsrf: true
       Content-Type: "application/json"
+      Authorization: "Basic {{ ('elastic:elastic') | b64encode }}"
     body_format: json
     body:
       policy_id: "{{ hostvars['elastic']['windows_agent_policy']['json']['item']['id'] }}"
   register: enrollment_tokens
   delegate_to: localhost
-  when: agent_download.changed
 
-- name: Install and enroll Elastic Agent with Fleet
+- name: Install and enroll Elastic EDR Agent with Fleet
   win_shell: |
     cd "{{ elastic_install_location }}\\elastic-agent-{{ elastic_agent_version }}-windows-x86_64"
+    Write-Output "Installing Elastic Agent with Fleet enrollment..."
     .\\elastic-agent.exe install --url=http://{{ elastic_server_host }}:8220 --enrollment-token={{ enrollment_tokens.json.list[0].api_key }} --force
-  when: agent_download.changed
   register: agent_install
 
-- name: Start Elastic Agent service
+- name: Display installation result
+  debug:
+    msg: "{{ agent_install.stdout_lines }}"
+
+- name: Wait for agent service to be ready
   win_service:
     name: "Elastic Agent"
     state: started
-    start_mode: auto
-  when: agent_install.changed
+  register: agent_service_start
+  retries: 5
+  delay: 10
 
-- name: Display installation status
+- name: Wait for agent to fully initialize
+  pause:
+    seconds: 30
+
+- name: Verify EDR agent status and Fleet connectivity
+  win_shell: |
+    Write-Output "=== Elastic Agent Status ==="
+    & "C:\Program Files\Elastic\Agent\elastic-agent.exe" status
+    Write-Output ""
+    Write-Output "=== Elastic Agent Version ==="
+    & "C:\Program Files\Elastic\Agent\elastic-agent.exe" version
+  register: agent_status_output
+  failed_when: false
+
+- name: Display comprehensive EDR Agent status
   debug:
-    msg: "Elastic Agent installed and enrolled with Fleet on {{ inventory_hostname }}"
-  when: agent_install.changed
+    msg:
+      - "✓ EDR Agent installed and enrolled on {{ inventory_hostname }}"
+      - "{{ agent_status_output.stdout_lines }}"
 
-- name: Verify agent installation
-  include_tasks: verify.yml
-  when: agent_install.changed
+- name: Display Fleet enrollment success
+  debug:
+    msg:
+      - "🛡️ Elastic EDR Agent successfully enrolled with Fleet Server"
+      - "Agent should appear in Kibana Fleet management within 1-2 minutes"
+      - "Check: http://{{ elastic_server_host }}:5601 → Fleet → Agents"

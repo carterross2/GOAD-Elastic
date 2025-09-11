@@ -5,5 +5,5 @@
   ami                = "ami-00c71bd4d220aa22a"
   private_ip_address = "{{ip_range}}.52"
   password           = "sgdvnkjhdshlsd"
-  size               = "t3.large"  # 2cpu / 8GB for streamlined EDR
+  size               = "t3.xlarge"  # 4cpu / 16GB for Elastic Stack
 }
