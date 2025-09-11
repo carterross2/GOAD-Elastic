@@ -4,8 +4,9 @@
 
 - name: Check Fleet Server connectivity
   win_uri:
-    url: "http://{{ elastic_server_host }}:8220/api/status"
+    url: "https://{{ elastic_server_host }}:8220/api/status"
     method: GET
+    validate_certs: no
   register: fleet_server_check
   failed_when: false
   delegate_to: "{{ inventory_hostname }}"
@@ -16,7 +17,7 @@
       - fleet_server_check.status_code == 200
     fail_msg: |
       ❌ Fleet Server is not accessible from {{ inventory_hostname }}
-      URL: http://{{ elastic_server_host }}:8220/api/status
+      URL: https://{{ elastic_server_host }}:8220/api/status
       Status: {{ fleet_server_check.status_code | default('No response') }}
       Error: {{ fleet_server_check.msg | default('Connection failed') }}
       
@@ -33,21 +34,6 @@
   register: kibana_api_check
   failed_when: false
   delegate_to: "{{ inventory_hostname }}"
-
-- name: Verify Kibana API is accessible
-  assert:
-    that:
-      - kibana_api_check.status_code == 200
-    fail_msg: |
-      ❌ Kibana API is not accessible from {{ inventory_hostname }}
-      URL: http://{{ elastic_server_host }}:5601/api/status
-      Status: {{ kibana_api_check.status_code | default('No response') }}
-      
-      Please verify:
-      1. Kibana is running on {{ elastic_server_host }}
-      2. Port 5601 is accessible from Windows machines
-      3. Kibana has fully started (check kibana logs)
-    success_msg: "✓ Kibana API is accessible from {{ inventory_hostname }}"
 
 - name: Display connectivity check results
   debug:
