@@ -51,10 +51,9 @@ services:
         condition: service_healthy
     environment:
       - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-      - ELASTICSEARCH_USERNAME=elastic
-      - ELASTICSEARCH_PASSWORD=${ELASTIC_PASSWORD}
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD}
       - xpack.security.enabled=true
-      - KIBANA_SYSTEM_PASSWORD=${ELASTIC_PASSWORD}
       - xpack.encryptedSavedObjects.encryptionKey=${ENCRYPTION_KEY}
       - xpack.security.encryptionKey=${ENCRYPTION_KEY}
       - xpack.reporting.encryptionKey=${ENCRYPTION_KEY}

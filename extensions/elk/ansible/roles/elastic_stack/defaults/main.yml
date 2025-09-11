@@ -1,0 +1,17 @@
+elasticsearch_version: '8.11.0'
+elastic_password: 'changeme'
+kibana_password: 'changeme'
+
+# Fleet Server Configuration
+fleet_server_host: '0.0.0.0'
+fleet_server_port: '8220'
+
+# Network Configuration  
+elasticsearch_host: '0.0.0.0'
+elasticsearch_port: '9200'
+kibana_host: '0.0.0.0'
+kibana_port: '5601'
+
+# Disk and Performance Settings
+elasticsearch_heap_size: '3g'
+minimum_disk_space_gb: 20

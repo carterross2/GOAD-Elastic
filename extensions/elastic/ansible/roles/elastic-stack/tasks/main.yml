@@ -125,6 +125,57 @@
   delay: 10
   until: es_health.status in [200, 201]
 
+- name: Check if kibana_system user exists and get info
+  uri:
+    url: "http://localhost:9200/_security/user/kibana_system"
+    method: GET
+    user: elastic
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+    status_code: [200, 404]
+  register: kibana_user_check
+  retries: 10
+  delay: 5
+
+- name: Display kibana_system user info
+  debug:
+    msg: "kibana_system user status: {{ kibana_user_check.status }} - {{ kibana_user_check.json if kibana_user_check.status == 200 else 'User not found' }}"
+
+- name: Set kibana_system password
+  uri:
+    url: "http://localhost:9200/_security/user/kibana_system/_password"
+    method: PUT
+    user: elastic
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      password: "{{ kibana_password }}"
+    status_code: [200]
+  register: kibana_password_result
+  retries: 10
+  delay: 5
+  until: kibana_password_result.status == 200
+
+- name: Verify kibana_system authentication
+  uri:
+    url: "http://localhost:9200/_security/_authenticate"
+    method: GET
+    user: kibana_system
+    password: "{{ kibana_password }}"
+    force_basic_auth: yes
+    status_code: [200]
+  register: kibana_auth_test
+  retries: 5
+  delay: 3
+  until: kibana_auth_test.status == 200
+
+- name: Display authentication test result
+  debug:
+    msg: "kibana_system authentication successful: {{ kibana_auth_test.json }}"
+
 - name: Wait for Kibana to be ready
   uri:
     url: "http://localhost:5601/api/status"

@@ -1,0 +1,409 @@
+- name: Check available disk space
+  shell: df / | tail -1 | awk '{print $4}'
+  register: available_space
+  
+- name: Fail if insufficient disk space
+  fail:
+    msg: "Insufficient disk space. Need at least {{ minimum_disk_space_gb }}GB, available: {{ (available_space.stdout|int / 1024 / 1024) | round(1) }}GB"
+  when: (available_space.stdout|int / 1024 / 1024) < minimum_disk_space_gb
+
+- name: Update apt cache
+  apt:
+    update_cache: true
+    cache_valid_time: 86400
+
+- name: Install required dependencies
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - unzip
+      - ufw
+    state: present
+
+- name: Add Elastic GPG key
+  apt_key:
+    url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+    state: present
+
+- name: Add Elastic repository
+  apt_repository:
+    repo: 'deb https://artifacts.elastic.co/packages/8.x/apt stable main'
+    state: present
+    update_cache: true
+
+- name: Install Elasticsearch
+  apt:
+    name: elasticsearch
+    state: present
+
+- name: Copy Elasticsearch configuration
+  copy:
+    src: elasticsearch.yml
+    dest: /etc/elasticsearch/elasticsearch.yml
+    owner: root
+    group: elasticsearch
+    mode: '0660'
+    backup: yes
+
+- name: Set Elasticsearch heap size (3GB for 8GB total RAM)
+  lineinfile:
+    path: /etc/elasticsearch/jvm.options.d/heap.options
+    line: "{{ item }}"
+    create: yes
+  loop:
+    - '-Xms{{ elasticsearch_heap_size }}'
+    - '-Xmx{{ elasticsearch_heap_size }}'
+
+- name: Enable and start Elasticsearch
+  systemd:
+    name: elasticsearch
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Wait for Elasticsearch to be ready
+  uri:
+    url: "http://localhost:9200/_cluster/health"
+    method: GET
+    status_code: 200
+  register: elasticsearch_health
+  until: elasticsearch_health.status == 200
+  retries: 60
+  delay: 10
+
+- name: Set built-in user passwords
+  uri:
+    url: "http://localhost:9200/_security/user/{{ item.user }}/_password"
+    method: PUT
+    body_format: json
+    body:
+      password: "{{ item.password }}"
+    status_code: 200
+  loop:
+    - { user: "elastic", password: "{{ elastic_password }}" }
+    - { user: "kibana_system", password: "{{ kibana_password }}" }
+
+- name: Install Kibana
+  apt:
+    name: kibana
+    state: present
+
+- name: Copy Kibana configuration
+  copy:
+    src: kibana.yml  
+    dest: /etc/kibana/kibana.yml
+    owner: root
+    group: kibana
+    mode: '0660'
+    backup: yes
+
+- name: Enable and start Kibana
+  systemd:
+    name: kibana
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Wait for Kibana to be ready
+  uri:
+    url: "http://localhost:5601/status"
+    method: GET
+    status_code: 200
+  register: kibana_health
+  until: kibana_health.status == 200
+  retries: 60
+  delay: 15
+
+# Fleet Server Setup with proper sequencing
+- name: Setup Fleet in Kibana
+  uri:
+    url: "http://localhost:5601/api/fleet/setup"
+    method: POST
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: "true"
+    body_format: json
+    body: {}
+    status_code: [200, 409]
+
+- name: Wait for Fleet setup to complete
+  uri:
+    url: "http://localhost:5601/api/fleet/agent_policies"
+    method: GET
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      kbn-xsrf: "true"
+    status_code: 200
+  register: fleet_ready
+  until: fleet_ready.status == 200
+  retries: 30
+  delay: 10
+
+- name: Create Fleet Server policy FIRST
+  uri:
+    url: "http://localhost:5601/api/fleet/agent_policies"
+    method: POST
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: "true"
+    body_format: json
+    body:
+      name: "Fleet Server Policy"
+      description: "Policy for Fleet Server"
+      namespace: "default"
+      monitoring_enabled: 
+        - "logs"
+        - "metrics"
+    status_code: [200, 409]
+  register: fleet_server_policy_response
+
+- name: Add Fleet Server integration to policy
+  uri:
+    url: "http://localhost:5601/api/fleet/package_policies"
+    method: POST
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: "true"
+    body_format: json
+    body:
+      name: "fleet-server-policy"
+      description: "Fleet Server integration"
+      namespace: "default"  
+      policy_id: "{{ fleet_server_policy_response.json.item.id }}"
+      enabled: true
+      package:
+        name: "fleet_server"
+        version: "latest"
+      inputs:
+        - type: "fleet-server"
+          enabled: true
+          streams: []
+          vars:
+            host:
+              value: ["0.0.0.0:8220"]
+            port:
+              value: [8220]
+    status_code: [200, 409]
+  when: fleet_server_policy_response.json.item.id is defined
+
+- name: Download Elastic Agent
+  get_url:
+    url: "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ elasticsearch_version }}-linux-x86_64.tar.gz"
+    dest: /tmp/elastic-agent.tar.gz
+    mode: '0644'
+
+- name: Create elastic-agent directory
+  file:
+    path: /opt/elastic-agent
+    state: directory
+    mode: '0755'
+
+- name: Extract Elastic Agent
+  unarchive:
+    src: /tmp/elastic-agent.tar.gz
+    dest: /opt/elastic-agent
+    remote_src: yes
+    extra_opts: [--strip-components=1]
+
+- name: Generate service token for Fleet Server
+  uri:
+    url: "http://localhost:9200/_security/service/elastic/fleet-server/credential/token/fleet-server-token"
+    method: POST
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    body_format: json
+    body: {}
+    status_code: 200
+  register: service_token_response
+
+- name: Install Fleet Server with proper flags and policy
+  shell: |
+    ./elastic-agent install --fleet-server-es=http://localhost:9200 \
+    --fleet-server-service-token={{ service_token_response.json.token.value }} \
+    --fleet-server-policy={{ fleet_server_policy_response.json.item.id }} \
+    --fleet-server-host={{ fleet_server_host }} \
+    --fleet-server-port={{ fleet_server_port }} \
+    --fleet-server-es-insecure \
+    --force --insecure
+  args:
+    chdir: /opt/elastic-agent
+  when: fleet_server_policy_response.json.item.id is defined
+
+- name: Wait for Fleet Server to be fully ready
+  uri:
+    url: "http://localhost:{{ fleet_server_port }}/api/status"
+    method: GET
+    status_code: 200
+  register: fleet_server_health
+  until: fleet_server_health.status == 200
+  retries: 60
+  delay: 10
+
+- name: Wait additional time for Fleet Server initialization
+  pause:
+    seconds: 30
+
+- name: Configure Fleet Server hosts in Kibana
+  uri:
+    url: "http://localhost:5601/api/fleet/fleet_server_hosts"
+    method: POST
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: "true"
+    body_format: json
+    body:
+      name: "default"
+      host_urls: ["http://{{ ansible_default_ipv4.address }}:{{ fleet_server_port }}"]
+      is_default: true
+    status_code: [200, 409]
+
+- name: Create Agent Policy with Elastic Defend
+  uri:
+    url: "http://localhost:5601/api/fleet/agent_policies"
+    method: POST
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: "true"
+    body_format: json
+    body:
+      name: "Windows EDR Policy"
+      description: "Policy for Windows machines with Elastic Defend"
+      namespace: "default"
+      monitoring_enabled: 
+        - "logs"
+        - "metrics"
+    status_code: [200, 409]
+  register: agent_policy_response
+
+- name: Add Elastic Defend integration to policy
+  uri:
+    url: "http://localhost:5601/api/fleet/package_policies"
+    method: POST
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: "true"
+    body_format: json
+    body:
+      name: "elastic-defend-policy"
+      description: "Elastic Defend integration for Windows machines"
+      namespace: "default"
+      policy_id: "{{ agent_policy_response.json.item.id }}"
+      enabled: true
+      package:
+        name: "endpoint"
+        version: "latest"
+      inputs:
+        - type: "endpoint"
+          enabled: true
+          streams: []
+          config:
+            policy:
+              value:
+                windows:
+                  events:
+                    process: true
+                    file: true
+                    network: true
+                    registry: true
+                  malware:
+                    mode: "prevent"
+                  ransomware:
+                    mode: "prevent"
+    status_code: [200, 409]
+  when: agent_policy_response.json.item.id is defined
+
+- name: Generate enrollment token (with retry)
+  uri:
+    url: "http://localhost:5601/api/fleet/enrollment_api_keys"
+    method: POST
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: "true"
+    body_format: json
+    body:
+      policy_id: "{{ agent_policy_response.json.item.id }}"
+      name: "Windows EDR Token"
+    status_code: [200, 409]
+  register: enrollment_token_response
+  until: enrollment_token_response.status == 200
+  retries: 10
+  delay: 15
+  when: agent_policy_response.json.item.id is defined
+
+- name: Create web-accessible directory for tokens
+  file:
+    path: /var/www/html
+    state: directory
+    mode: '0755'
+
+- name: Install nginx for token sharing
+  apt:
+    name: nginx
+    state: present
+
+- name: Enable nginx
+  systemd:
+    name: nginx
+    enabled: yes
+    state: started
+
+- name: Open firewall for Fleet Server port
+  ufw:
+    rule: allow
+    port: "{{ fleet_server_port }}"
+    proto: tcp
+  ignore_errors: yes
+
+- name: Open firewall for Kibana port
+  ufw:
+    rule: allow
+    port: "{{ kibana_port }}"
+    proto: tcp
+  ignore_errors: yes
+
+- name: Open firewall for Elasticsearch port
+  ufw:
+    rule: allow
+    port: "{{ elasticsearch_port }}"
+    proto: tcp
+  ignore_errors: yes
+
+- name: Save enrollment token to web directory
+  copy:
+    content: "{{ enrollment_token_response.json.item.api_key }}"
+    dest: /var/www/html/enrollment_token
+    mode: '0644'
+  when: enrollment_token_response.json.item.api_key is defined
+
+- name: Save Fleet Server URL to web directory
+  copy:
+    content: "http://{{ ansible_default_ipv4.address }}:{{ fleet_server_port }}"
+    dest: /var/www/html/fleet_server_url
+    mode: '0644'
+
+- name: Display installation summary
+  debug:
+    msg: |
+      ✅ EDR Installation Complete!
+      📊 Kibana: http://{{ ansible_default_ipv4.address }}:5601 (elastic/changeme)
+      🔍 Elasticsearch: http://{{ ansible_default_ipv4.address }}:9200
+      🚀 Fleet Server: http://{{ ansible_default_ipv4.address }}:8220
+      📝 Enrollment Token: Available at http://{{ ansible_default_ipv4.address }}/enrollment_token

@@ -1,0 +1,22 @@
+cluster.name: elastic-edr-cluster
+node.name: elk-edr-node
+path.data: /var/lib/elasticsearch
+path.logs: /var/log/elasticsearch
+network.host: 0.0.0.0
+http.port: 9200
+discovery.type: single-node
+
+# Security Configuration (simplified for lab environment)
+xpack.security.enabled: true
+xpack.security.enrollment.enabled: true
+xpack.security.http.ssl:
+  enabled: false  # Disabled for simplicity in lab environment
+xpack.security.transport.ssl:
+  enabled: false
+
+# Fleet Integration
+action.auto_create_index: ".fleet-*,.logs-*,.metrics-*,.traces-*,.transform-*,logs-*,metrics-*,synthetics-*"
+
+# Performance Settings for Lab
+indices.memory.index_buffer_size: 256mb
+thread_pool.write.queue_size: 1000

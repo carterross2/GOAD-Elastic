@@ -1,11 +1,12 @@
-# LOGS and Monitoring ==========================================================================================
-- name: Install ELK
-  hosts: elk_server
+# Elastic Stack and Fleet Server Installation
+- name: Install Elastic Stack and Fleet Server
+  hosts: elastic_stack
   become: yes
   roles:
-    - { role: 'elk', tags: 'elk' }
+    - { role: 'elastic_stack', tags: 'elastic' }
 
-- name: Install log agent on windows vms
-  hosts: elk_log
+# Install EDR agents on Windows VMs
+- name: Install Elastic Defend agents on Windows VMs
+  hosts: edr_agents
   roles:
-    - { role: 'logs_windows', tags: 'agent' }
+    - { role: 'elastic_defend_windows', tags: 'edr-agent' }
