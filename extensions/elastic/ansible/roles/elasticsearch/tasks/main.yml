@@ -11,6 +11,11 @@
     name: openjdk-11-jdk
     state: present
 
+- name: Install jq
+  apt:
+    name: jq
+    state: present
+
 - name: Add Elastic repository key
   apt_key:
     url: https://artifacts.elastic.co/GPG-KEY-elasticsearch

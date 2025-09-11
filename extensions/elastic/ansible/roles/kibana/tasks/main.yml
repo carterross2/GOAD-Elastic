@@ -165,10 +165,14 @@
   register: existing_edr_policies
   when: windows_edr_policy.status is defined and windows_edr_policy.status == 409
 
-- name: Set Windows EDR policy ID from existing policy
+- name: Find Windows EDR policy ID using loop
   set_fact:
-    windows_edr_policy_id: "{{ existing_edr_policies.json.items | selectattr('name', 'equalto', 'Windows EDR Policy') | list | first | attr('id') }}"
-  when: windows_edr_policy.status is defined and windows_edr_policy.status == 409
+    windows_edr_policy_id: "{{ item.id }}"
+  loop: "{{ existing_edr_policies.json['items'] | default([]) }}"
+  when:
+    - windows_edr_policy.status is defined 
+    - windows_edr_policy.status == 409
+    - item.name == "Windows EDR Policy"
 
 - name: Set Windows EDR policy ID from newly created policy
   set_fact:
@@ -219,15 +223,65 @@
   register: endpoint_integration
   failed_when: false
 
-- name: Install Fleet Server locally
+- name: Set Fleet Server policy ID
+  set_fact:
+    fleet_server_policy_id: "{{ fleet_server_policy.json.item.id if (fleet_server_policy.json.item is defined) else 'fleet-server-policy' }}"
+
+# Generate Fleet Server service token
+- name: Generate Fleet Server service token
+  uri:
+    url: "http://localhost:9200/_security/service/elastic/fleet-server/credential/token/fleet-server-token"
+    method: POST
+    user: "elastic"
+    password: "elastic"
+    force_basic_auth: yes
+  register: fleet_token_response
+
+- name: Set Fleet Server policy ID
+  set_fact:
+    fleet_server_policy_id: "{{ fleet_server_policy.json.item.id if (fleet_server_policy.json.item is defined) else 'fleet-server-policy' }}"
+
+- name: Install Fleet Server locally (with embedded token generation)
   shell: |
     cd /tmp
     curl -L -O https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ kibana_version }}-linux-x86_64.tar.gz
     tar xzvf elastic-agent-{{ kibana_version }}-linux-x86_64.tar.gz
     cd elastic-agent-{{ kibana_version }}-linux-x86_64
-    sudo ./elastic-agent install --fleet-server-es=http://localhost:9200 --fleet-server-service-token=$(curl -s -X POST -u elastic:elastic "http://localhost:9200/_security/service/elastic/fleet-server/credential/token/fleet-server-token" | jq -r .token.value) --fleet-server-policy={{ fleet_server_policy.json.item.id }} --force
+    
+    # Generate or get existing token
+    TOKEN=$(curl -s -X POST -u elastic:elastic "http://localhost:9200/_security/service/elastic/fleet-server/credential/token/fleet-server-token-$(date +%s)" | jq -r '.token.value // empty')
+    if [ -z "$TOKEN" ]; then
+      TOKEN=$(curl -s -u elastic:elastic "http://localhost:9200/_security/service/elastic/fleet-server/credential/token" | jq -r '.tokens[0].token.value')
+    fi
+    
+    sudo ./elastic-agent install --fleet-server-es=http://localhost:9200 --fleet-server-service-token=$TOKEN --fleet-server-policy={{ fleet_server_policy_id }} --force
   register: fleet_server_install
-  failed_when: false
+
+- name: Wait for Fleet Server to be ready
+  pause:
+    seconds: 30
+
+- name: Verify Fleet Server is running
+  systemd:
+    name: elastic-agent
+    state: started
+  register: fleet_service_status
+
+- name: Check Fleet Server status
+  uri:
+    url: "http://localhost:8220/api/status"
+    method: GET
+  register: fleet_server_status
+  until: fleet_server_status.status == 200
+  retries: 10
+  delay: 10
+
+- name: Display Fleet Server status
+  debug:
+    msg:
+      - "✓ Fleet Server is running and accessible"
+      - "Fleet Server should now be visible in Kibana → Fleet → Agents"
+      - "Check at: http://{{ ansible_default_ipv4.address }}:5601/app/fleet/agents"
 
 - name: Wait for Fleet Server to be ready
   pause:
