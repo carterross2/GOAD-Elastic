@@ -1,0 +1,48 @@
+cluster.name: {{ elasticsearch_cluster_name }}
+node.name: {{ elasticsearch_node_name }}
+path.data: {{ elasticsearch_data_path }}
+path.logs: {{ elasticsearch_log_path }}
+network.host: 0.0.0.0
+http.port: {{ elasticsearch_port }}
+discovery.type: single-node
+
+# Security configuration
+xpack.security.enabled: true
+xpack.security.enrollment.enabled: true
+
+# Transport security (node-to-node communication)
+xpack.security.transport.ssl:
+  enabled: false
+  verification_mode: certificate
+  client_authentication: required
+
+# HTTP security (client connections)
+xpack.security.http.ssl:
+  enabled: false
+  verification_mode: certificate
+
+# Authentication settings
+xpack.security.authc:
+  realms:
+    native:
+      native1:
+        order: 0
+
+# Audit logging for security events
+xpack.security.audit.enabled: true
+xpack.security.audit.logfile.events.include:
+  - access_denied
+  - access_granted
+  - anonymous_access_denied
+  - authentication_failed
+  - authentication_success
+  - realm_authentication_failed
+  - tampered_request
+  - run_as_denied
+  - run_as_granted
+
+# Machine learning settings
+xpack.ml.enabled: true
+
+# Monitoring settings
+xpack.monitoring.collection.enabled: true

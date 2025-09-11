@@ -1,0 +1,227 @@
+- name: Display installation progress
+  debug:
+    msg: "Starting Elasticsearch installation and configuration..."
+    
+- name: Update apt cache
+  apt:
+    update_cache: yes
+
+- name: Install Java 11
+  apt:
+    name: openjdk-11-jdk
+    state: present
+
+- name: Add Elastic repository key
+  apt_key:
+    url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+    state: present
+
+- name: Add Elastic repository
+  apt_repository:
+    repo: "deb https://artifacts.elastic.co/packages/8.x/apt stable main"
+    state: present
+
+- name: Install Elasticsearch
+  apt:
+    name: "elasticsearch={{ elasticsearch_version }}"
+    state: present
+  notify: restart elasticsearch
+
+- name: Display progress - Elasticsearch installed
+  debug:
+    msg: "✓ Elasticsearch {{ elasticsearch_version }} installed successfully"
+
+- name: Create elasticsearch configuration
+  template:
+    src: elasticsearch.yml.j2
+    dest: /etc/elasticsearch/elasticsearch.yml
+    owner: root
+    group: elasticsearch
+    mode: '0660'
+  notify: restart elasticsearch
+
+- name: Set JVM heap size
+  lineinfile:
+    path: /etc/elasticsearch/jvm.options
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+  loop:
+    - { regexp: '^-Xms', line: "-Xms{{ elasticsearch_heap_size }}" }
+    - { regexp: '^-Xmx', line: "-Xmx{{ elasticsearch_heap_size }}" }
+  notify: restart elasticsearch
+
+- name: Start and enable Elasticsearch
+  systemd:
+    name: elasticsearch
+    state: started
+    enabled: yes
+
+- name: Display progress - Elasticsearch starting
+  debug:
+    msg: "Starting Elasticsearch service... (this may take 30-60 seconds)"
+
+- name: Wait for Elasticsearch to start
+  wait_for:
+    port: "{{ elasticsearch_port }}"
+    host: "localhost"
+    delay: 30
+    timeout: 300
+
+- name: Wait for Elasticsearch to be responsive (without auth)
+  uri:
+    url: "http://localhost:{{ elasticsearch_port }}"
+    method: GET
+    status_code: [200, 401]  # 401 is expected when security is enabled
+  register: es_responsive
+  until: es_responsive.status in [200, 401]
+  retries: 10
+  delay: 15
+
+- name: Display progress - Elasticsearch responsive
+  debug:
+    msg: "✓ Elasticsearch is responding to requests"
+
+- name: Reset elastic user password
+  shell: |
+    printf 'y\n{{ elastic_password }}\n{{ elastic_password }}\n' | /usr/share/elasticsearch/bin/elasticsearch-reset-password -u elastic -i
+  register: elastic_password_reset
+  until: elastic_password_reset.rc == 0
+  retries: 5
+  delay: 10
+  changed_when: elastic_password_reset.rc == 0
+
+- name: Set kibana_system user password  
+  shell: |
+    printf 'y\n{{ elastic_password }}\n{{ elastic_password }}\n' | /usr/share/elasticsearch/bin/elasticsearch-reset-password -u kibana_system -i
+  register: kibana_password_reset
+  until: kibana_password_reset.rc == 0
+  retries: 5
+  delay: 10
+  changed_when: kibana_password_reset.rc == 0
+
+- name: Display progress - Security configured
+  debug:
+    msg: "✓ Elasticsearch security configured with password: elastic"
+
+- name: Wait for Elasticsearch cluster to be ready (with auth)
+  uri:
+    url: "http://localhost:{{ elasticsearch_port }}/_cluster/health?wait_for_status=yellow&timeout=60s"
+    method: GET
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+  register: es_health
+  until: es_health.status == 200
+  retries: 10
+  delay: 15
+
+- name: Display progress - Elasticsearch ready
+  debug:
+    msg: "✓ Elasticsearch cluster is ready and healthy"
+
+- name: Create Windows security index template
+  uri:
+    url: "http://localhost:{{ elasticsearch_port }}/_index_template/windows-security"
+    method: PUT
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+    body_format: json
+    body:
+      index_patterns: ["windows-*", "endpoint-*", "logs-*"]
+      template:
+        settings:
+          number_of_shards: 1
+          number_of_replicas: 0
+          index.refresh_interval: "5s"
+        mappings:
+          properties:
+            "@timestamp":
+              type: date
+            event:
+              properties:
+                action:
+                  type: keyword
+                category:
+                  type: keyword
+                code:
+                  type: keyword
+                dataset:
+                  type: keyword
+                id:
+                  type: keyword
+                kind:
+                  type: keyword
+                module:
+                  type: keyword
+                outcome:
+                  type: keyword
+                provider:
+                  type: keyword
+                type:
+                  type: keyword
+            host:
+              properties:
+                hostname:
+                  type: keyword
+                name:
+                  type: keyword
+                os:
+                  properties:
+                    family:
+                      type: keyword
+                    name:
+                      type: keyword
+                    version:
+                      type: keyword
+            process:
+              properties:
+                name:
+                  type: keyword
+                pid:
+                  type: long
+                executable:
+                  type: keyword
+                command_line:
+                  type: text
+            user:
+              properties:
+                name:
+                  type: keyword
+                domain:
+                  type: keyword
+            winlog:
+              properties:
+                channel:
+                  type: keyword
+                event_id:
+                  type: keyword
+                provider_name:
+                  type: keyword
+                record_id:
+                  type: keyword
+  register: index_template_result
+  until: index_template_result.status == 200
+  retries: 5
+  delay: 10
+
+- name: Verify Elasticsearch cluster health
+  uri:
+    url: "http://localhost:{{ elasticsearch_port }}/_cluster/health"
+    user: "elastic"
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+  register: final_es_health
+  until: final_es_health.json.status in ["yellow", "green"]
+  retries: 10
+  delay: 10
+
+- name: Display Elasticsearch cluster status
+  debug:
+    msg:
+      - "Elasticsearch Status: {{ final_es_health.json.status }}"
+      - "Number of nodes: {{ final_es_health.json.number_of_nodes }}"
+      - "Active shards: {{ final_es_health.json.active_shards }}"
+
+- name: Configure Elasticsearch security features
+  include_tasks: configure_security.yml

@@ -64,6 +64,69 @@
     state: started
     daemon_reload: yes
 
+- name: Wait for Elasticsearch port to be available
+  wait_for:
+    port: 9200
+    host: localhost
+    delay: 10
+    timeout: 60
+
+- name: Wait for Elasticsearch bootstrap to complete
+  pause:
+    seconds: 30
+
+- name: Check if Elasticsearch is responding (expect 401 - security enabled)
+  uri:
+    url: "http://localhost:9200/"
+    method: GET
+    status_code: [401]  # We expect 401 because security is enabled
+  register: es_initial_check
+  retries: 10
+  delay: 5
+  until: es_initial_check.status == 401
+
+- name: Use elasticsearch-setup-passwords to set all passwords
+  shell: |
+    echo "y" | /usr/share/elasticsearch/bin/elasticsearch-setup-passwords auto
+  register: setup_passwords_result
+  failed_when: setup_passwords_result.rc != 0
+
+- name: Extract elastic password from setup output
+  set_fact:
+    bootstrap_elastic_password: "{{ setup_passwords_result.stdout | regex_search('PASSWORD elastic = (.+)', '\\1') | first }}"
+
+- name: Reset elastic password to our desired value
+  uri:
+    url: "http://localhost:9200/_security/user/elastic/_password"
+    method: PUT
+    user: elastic
+    password: "{{ bootstrap_elastic_password }}"
+    force_basic_auth: yes
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      password: "{{ elastic_password }}"
+    status_code: [200]
+  retries: 5
+  delay: 3
+
+- name: Set kibana_system password  
+  uri:
+    url: "http://localhost:9200/_security/user/kibana_system/_password"
+    method: PUT
+    user: kibana_system
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+    headers:
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      password: "{{ kibana_password }}"
+    status_code: [200]
+  retries: 3
+  delay: 3
+
 - name: Wait for Elasticsearch service to be active
   systemd:
     name: elasticsearch
@@ -95,17 +158,21 @@
   uri:
     url: "http://localhost:9200/_cluster/health"
     method: GET
-    status_code: 200
+    user: elastic
+    password: "{{ elastic_password }}"
+    force_basic_auth: yes
+    status_code: [200]
   register: elasticsearch_health
-  until: elasticsearch_health.status == 200
   retries: 3
-  delay: 15
-  failed_when: false
+  delay: 10
+  until: elasticsearch_health.status == 200
 
 - name: Check Elasticsearch HTTP response on health check failure
   uri:
     url: "http://localhost:9200/"
     method: GET
+    user: "elastic"
+    password: "{{ elastic_password }}"
   register: elasticsearch_basic_check
   ignore_errors: yes
   when: elasticsearch_health.status != 200
@@ -124,18 +191,6 @@
       Recent Elasticsearch Logs:
       {{ detailed_elasticsearch_logs.stdout }}
   when: elasticsearch_health.status != 200
-
-- name: Set built-in user passwords
-  uri:
-    url: "http://localhost:9200/_security/user/{{ item.user }}/_password"
-    method: PUT
-    body_format: json
-    body:
-      password: "{{ item.password }}"
-    status_code: 200
-  loop:
-    - { user: "elastic", password: "{{ elastic_password }}" }
-    - { user: "kibana_system", password: "{{ kibana_password }}" }
 
 - name: Install Kibana
   apt:

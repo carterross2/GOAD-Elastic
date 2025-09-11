@@ -1,0 +1,290 @@
+- name: Display Kibana installation progress
+  debug:
+    msg: "Starting Kibana installation and configuration..."
+
+- name: Install Kibana
+  apt:
+    name: "kibana={{ kibana_version }}"
+    state: present
+  notify: restart kibana
+
+- name: Create kibana configuration
+  template:
+    src: kibana.yml.j2
+    dest: /etc/kibana/kibana.yml
+    owner: root
+    group: kibana
+    mode: '0660'
+  notify: restart kibana
+
+- name: Start and enable Kibana
+  systemd:
+    name: kibana
+    state: started
+    enabled: yes
+
+- name: Display startup message
+  debug:
+    msg: "Kibana is starting... This requires Elasticsearch to be ready first and may take several minutes."
+
+- name: Wait for Elasticsearch to be ready FIRST
+  uri:
+    url: "http://localhost:9200/_cluster/health"
+    user: "elastic"
+    password: "elastic"
+    force_basic_auth: yes
+  register: es_health
+  until: es_health.json.status in ["yellow", "green"]
+  retries: 20
+  delay: 15
+
+- name: Wait for Kibana to start (extended timeout)
+  wait_for:
+    port: "{{ kibana_port }}"
+    host: "localhost"
+    delay: 60
+    timeout: 900
+
+- name: Verify Kibana API is ready
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/status"
+    method: GET
+  register: kibana_status
+  until: kibana_status.status == 200
+  retries: 15
+  delay: 20
+
+- name: Display Kibana ready message
+  debug:
+    msg: "✓ Kibana is now ready and responding to requests"
+
+- name: Enable Elastic Security app (if available)
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/security_solution/sourcerer"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+    body_format: json
+    body:
+      patternList: ["windows-*", "logs-windows.*", "logs-endpoint.*", "security-alerts-*"]
+  register: security_app_result
+  failed_when: false
+
+- name: Wait for Fleet to be ready
+  pause:
+    seconds: 60
+
+- name: Setup Fleet
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/setup"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
+  register: fleet_setup
+  until: fleet_setup.status == 200
+  retries: 10
+  delay: 30
+
+- name: Create Fleet Server host
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/fleet_server_hosts"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
+    body_format: json
+    body:
+      name: "default"
+      host_urls: ["http://{{ ansible_default_ipv4.address }}:8220"]
+      is_default: true
+  register: fleet_server_host
+  failed_when: false
+
+- name: Create Fleet Server policy
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/agent_policies"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
+    body_format: json
+    body:
+      name: "Fleet Server Policy"
+      namespace: "default"
+      description: "Fleet Server policy for GOAD lab"
+      has_fleet_server: true
+  register: fleet_server_policy
+  failed_when: false
+
+- name: Create Windows agent policy
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/agent_policies"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
+    body_format: json
+    body:
+      name: "Windows Security Policy"
+      namespace: "default"
+      description: "Policy for Windows domain machines"
+  register: windows_agent_policy
+  failed_when: false
+
+- name: Get existing Windows agent policy ID (if policy creation failed)
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/agent_policies"
+    method: GET
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
+  register: existing_windows_policies
+  when: windows_agent_policy.status is defined and windows_agent_policy.status == 409
+
+- name: Set Windows policy ID from existing policy
+  set_fact:
+    windows_policy_id: "{{ existing_windows_policies.json.items | selectattr('name', 'equalto', 'Windows Security Policy') | list | first | attr('id') }}"
+  when: windows_agent_policy.status is defined and windows_agent_policy.status == 409
+
+- name: Set Windows policy ID from newly created policy
+  set_fact:
+    windows_policy_id: "{{ windows_agent_policy.json.item.id }}"
+  when: windows_agent_policy.status is defined and windows_agent_policy.status == 200
+
+- name: Add System integration to Windows policy
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
+    body_format: json
+    body:
+      name: "system-integration"
+      policy_id: "{{ windows_policy_id }}"
+      package:
+        name: "system"
+        version: "latest"
+  register: system_integration
+  failed_when: false
+
+- name: Add Windows integration to Windows policy
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
+    body_format: json
+    body:
+      name: "windows-integration"
+      policy_id: "{{ windows_policy_id }}"
+      package:
+        name: "windows"
+        version: "latest"
+  register: windows_integration
+  failed_when: false
+
+- name: Install Fleet Server locally
+  shell: |
+    cd /tmp
+    curl -L -O https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-{{ kibana_version }}-linux-x86_64.tar.gz
+    tar xzvf elastic-agent-{{ kibana_version }}-linux-x86_64.tar.gz
+    cd elastic-agent-{{ kibana_version }}-linux-x86_64
+    sudo ./elastic-agent install --fleet-server-es=http://localhost:9200 --fleet-server-service-token=$(curl -s -X POST -u elastic:elastic "http://localhost:9200/_security/service/elastic/fleet-server/credential/token/fleet-server-token" | jq -r .token.value) --fleet-server-policy={{ fleet_server_policy.json.item.id }} --force
+  register: fleet_server_install
+  failed_when: false
+
+- name: Wait for Fleet Server to be ready
+  pause:
+    seconds: 30
+  when: fleet_server_install.rc == 0
+
+- name: Display detection rules installation instructions
+  debug:
+    msg:
+      - "==============================================="
+      - "📋 DETECTION RULES INSTALLATION:"
+      - "==============================================="
+      - "Prebuilt detection rules must be installed manually:"
+      - "1. Navigate to Security → Detection rules (SIEM)"
+      - "2. Click 'Add Elastic rules'"
+      - "3. Click 'Install all' or select specific rules"
+      - "4. Enable the rules you want to use"
+      - "==============================================="
+
+- name: Verify Kibana health
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/status"
+    method: GET
+  register: kibana_final_health
+
+- name: Debug network interfaces
+  debug:
+    msg: "Interface {{ item }}: {{ hostvars[inventory_hostname]['ansible_' + item].ipv4.address | default('no IP') }}"
+  loop: "{{ ansible_interfaces }}"
+  when: hostvars[inventory_hostname]['ansible_' + item].ipv4 is defined
+
+- name: Find host-only network IP
+  set_fact:
+    host_only_candidates: >-
+      {{
+        ansible_interfaces 
+        | map('regex_replace', '^(.*)$', 'ansible_\1')
+        | map('extract', hostvars[inventory_hostname])
+        | selectattr('ipv4', 'defined')
+        | selectattr('ipv4.address', 'defined')
+        | selectattr('ipv4.address', 'match', '^192\.168\.56\.')
+        | map(attribute='ipv4.address')
+        | list
+      }}
+
+- name: Set VM network information
+  set_fact:
+    elastic_vm_ip: "{{ ansible_default_ipv4.address }}"
+    elastic_host_only_ip: "{{ host_only_candidates[0] if host_only_candidates else ansible_default_ipv4.address }}"
+
+- name: Display comprehensive access information
+  debug:
+    msg:
+      - "==============================================="
+      - "🚀 ELASTIC STACK INSTALLATION COMPLETE! 🚀"
+      - "==============================================="
+      - ""
+      - "📊 ACCESS INFORMATION:"
+      - "• Kibana Web UI: http://{{ elastic_host_only_ip }}:{{ kibana_port }}"
+      - "• Elasticsearch API: http://{{ elastic_host_only_ip }}:9200"
+      - "• Fleet Server: http://{{ elastic_host_only_ip }}:8220"
+      - "• From Host (Port Forward): http://localhost:{{ kibana_port }} (if configured)"
+      - ""
+      - "🔐 CREDENTIALS:"
+      - "• Username: elastic"
+      - "• Password: elastic"
+      - ""
+      - "🔍 DATA EXPLORATION:"
+      - "• Raw Logs: Analytics → Discover"
+      - "• Fleet Management: Fleet → Agents"
+      - "• Index Management: Management → Stack Management → Index Management"
+      - "• Detection Rules: Security → Detection rules (install manually via UI)"
+      - ""
+      - "📊 SERVICE STATUS:"
+      - "• Elasticsearch: {{ es_health.json.status | default('Unknown') }}"
+      - "• Kibana: {{ 'Healthy' if kibana_final_health.status == 200 else 'Issue detected' }}"
+      - "• Fleet Server: {{ 'Configured' if fleet_setup.status == 200 else 'Setup required' }}"
+      - ""
+      - "💡 QUICK START:"
+      - "1. Open http://{{ elastic_host_only_ip }}:{{ kibana_port }}"
+      - "2. Login with elastic/elastic"
+      - "3. Go to Analytics → Dashboard for security insights"
+      - "4. Go to Fleet → Agents to verify Windows agents enrollment"
+      - "5. Go to Security → Detection rules to install prebuilt rules"
+      - "==============================================="

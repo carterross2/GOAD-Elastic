@@ -7,9 +7,9 @@ boxes.append(
     :cpus => "{{ elastic_vm_cpus | default(4) }}",
     :mem => "{{ (elastic_vm_memory_gb | default(12)) * 1024 }}",
     :forwarded_port => [
-      { :guest => 5601, :host => 5601 },       # Kibana
-      { :guest => 9200, :host => 9200 },       # Elasticsearch
-      { :guest => 8220, :host => 8220 },       # Fleet Server
+      { :guest => 5601, :host => 5601 },
+      { :guest => 9200, :host => 9200 },
+      { :guest => 5044, :host => 5044 },
       { :guest => 22, :host => 2211, :id => "ssh" }
     ]
   }

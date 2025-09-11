@@ -1,0 +1,5 @@
+kibana_version: "8.11.0"
+kibana_port: 5601
+kibana_host: "0.0.0.0"
+elasticsearch_host: "localhost"
+kibana_admin_password: "kibana"
