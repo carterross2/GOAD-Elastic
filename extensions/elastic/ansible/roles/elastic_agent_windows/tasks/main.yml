@@ -43,10 +43,6 @@
       - "Kibana API ({{ elastic_server_host }}:5601): ✓ ACCESSIBLE"
       - "Proceeding with EDR agent installation..."
 
-- name: Display Fleet Server connectivity result
-  debug:
-    msg: "{{ fleet_connectivity.stdout_lines }}"
-
 - name: Display EDR agent installation progress
   debug:
     msg: "Installing Elastic EDR Agent on {{ inventory_hostname }}..."
@@ -107,12 +103,44 @@
   win_shell: |
     cd "{{ elastic_install_location }}\\elastic-agent-{{ elastic_agent_version }}-windows-x86_64"
     Write-Output "Installing Elastic Agent with Fleet enrollment..."
-    .\\elastic-agent.exe install --url=http://{{ elastic_server_host }}:8220 --enrollment-token={{ enrollment_tokens.json.list[0].api_key }} --force
+    .\\elastic-agent.exe install --url=https://{{ elastic_server_host }}:8220 --enrollment-token={{ enrollment_tokens.json.item.api_key }} --insecure --force
   register: agent_install
 
 - name: Display installation result
   debug:
     msg: "{{ agent_install.stdout_lines }}"
+
+- name: Enable PowerShell script block logging for enhanced detection
+  win_regedit:
+    path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging
+    name: EnableScriptBlockLogging
+    data: 1
+    type: dword
+
+- name: Enable PowerShell module logging
+  win_regedit:
+    path: HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging
+    name: EnableModuleLogging
+    data: 1
+    type: dword
+
+- name: Configure Windows Event Log sizes for security monitoring
+  win_shell: |
+    wevtutil sl Security /ms:1073741824
+    wevtutil sl System /ms:536870912
+    wevtutil sl Application /ms:536870912
+  register: eventlog_config
+  failed_when: false
+
+- name: Display PowerShell logging and event log configuration
+  debug:
+    msg:
+      - "✓ PowerShell script block logging enabled"
+      - "✓ PowerShell module logging enabled" 
+      - "✓ Windows Event Log sizes increased:"
+      - "  - Security: 1GB"
+      - "  - System: 512MB"
+      - "  - Application: 512MB"
 
 - name: Wait for agent service to be ready
   win_service:

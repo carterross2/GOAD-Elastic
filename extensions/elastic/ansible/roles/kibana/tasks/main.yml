@@ -179,7 +179,7 @@
     windows_edr_policy_id: "{{ windows_edr_policy.json.item.id }}"
   when: windows_edr_policy.status is defined and windows_edr_policy.status == 200
 
-- name: Add Endpoint Security integration to Windows EDR policy
+- name: Add Enhanced Endpoint Security integration to Windows EDR policy
   uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies"
     method: POST
@@ -220,8 +220,75 @@
                   attack_surface_reduction:
                     credential_hardening:
                       enabled: true
+                  events:
+                    process: true
+                    file: true
+                    network: true
+                    registry: true
+                    dns: true
+                    library: true
+                  logging:
+                    file: "info"
   register: endpoint_integration
   failed_when: false
+
+- name: Add Windows Event Logs integration to Windows EDR policy
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
+    body_format: json
+    body:
+      name: "windows-logs-policy"
+      policy_id: "{{ windows_edr_policy_id }}"
+      package:
+        name: "windows"
+        version: "latest"
+      inputs:
+        - type: "winlogs"
+          enabled: true
+          streams:
+            - enabled: true
+              data_stream:
+                dataset: "windows.security"
+                type: "logs"
+              vars:
+                channel:
+                  value: "Security"
+            - enabled: true
+              data_stream:
+                dataset: "windows.powershell"
+                type: "logs"
+              vars:
+                channel:
+                  value: "Windows PowerShell"
+            - enabled: true
+              data_stream:
+                dataset: "windows.powershell_operational"
+                type: "logs" 
+              vars:
+                channel:
+                  value: "Microsoft-Windows-PowerShell/Operational"
+            - enabled: true
+              data_stream:
+                dataset: "windows.system"
+                type: "logs"
+              vars:
+                channel:
+                  value: "System"
+  register: windows_logs_integration
+  failed_when: false
+
+- name: Display Windows Event Logs integration status
+  debug:
+    msg:
+      - "✓ Windows Event Logs integration added"
+      - "Collecting: Security, PowerShell, System logs"
+      - "This will increase data volume significantly"
+  when: windows_logs_integration.status == 200
 
 - name: Set Fleet Server policy ID
   set_fact:
