@@ -10,7 +10,7 @@ xpack.encryptedSavedObjects.encryptionKey: "goad-edr-encryption-key-32chars-long
 # Fleet settings for EDR agent management
 xpack.fleet.agents.enabled: true
 xpack.fleet.agents.elasticsearch.hosts: ["http://{{ elasticsearch_host }}:9200"]
-xpack.fleet.agents.fleet_server.hosts: ["http://{{ ansible_default_ipv4.address }}:8220"]
+xpack.fleet.agents.fleet_server.hosts: ["http://{{ ansible_host }}:8220"]
 
 # Security features
 xpack.security.enabled: true
