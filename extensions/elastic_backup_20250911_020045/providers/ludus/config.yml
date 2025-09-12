@@ -1,8 +1,0 @@
-  - vm_name: "{{ range_id }}-ELASTIC"
-    hostname: "{{ range_id }}-ELASTIC"
-    template: ubuntu-22.04-x64-server-template
-    vlan: 10
-    ip_last_octet: 52
-    ram_gb: "{{ elastic_vm_memory_gb | default(12) }}"
-    cpus: "{{ elastic_vm_cpus | default(4) }}"
-    linux: true
