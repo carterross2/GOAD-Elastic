@@ -4,7 +4,7 @@
 
 - name: Check Fleet Server connectivity
   win_uri:
-    url: "https://{{ elastic_server_host }}:8220/api/status"
+    url: "http://{{ elastic_server_host }}:8220/api/status"
     method: GET
     validate_certs: no
   register: fleet_server_check
@@ -17,7 +17,7 @@
       - fleet_server_check.status_code == 200
     fail_msg: |
       ❌ Fleet Server is not accessible from {{ inventory_hostname }}
-      URL: https://{{ elastic_server_host }}:8220/api/status
+      URL: http://{{ elastic_server_host }}:8220/api/status
       Status: {{ fleet_server_check.status_code | default('No response') }}
       Error: {{ fleet_server_check.msg | default('Connection failed') }}
       
@@ -109,7 +109,7 @@
   win_shell: |
     cd "{{ elastic_install_location }}\\elastic-agent-{{ elastic_agent_version }}-windows-x86_64"
     Write-Output "Installing Elastic Agent with Fleet enrollment..."
-    .\\elastic-agent.exe install --url=https://{{ elastic_server_host }}:8220 --enrollment-token={{ enrollment_tokens.json.item.api_key }} --insecure --force
+    .\\elastic-agent.exe install --url=http://{{ elastic_server_host }}:8220 --enrollment-token={{ enrollment_tokens.json.item.api_key }} --insecure --force
   register: agent_install
 
 - name: Display installation result
