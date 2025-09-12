@@ -435,7 +435,7 @@
     body: {}
   register: prebuilt_rules_result
   retries: 3
-  delay: 30
+  delay: 60
 
 - name: Generate Fleet Server service token
   uri:
