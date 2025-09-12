@@ -99,6 +99,12 @@
   register: enrollment_tokens
   delegate_to: localhost
 
+- name: Debug elastic_server_host variable
+  debug:
+    msg: 
+      - "elastic_server_host: {{ elastic_server_host }}"
+      - "hostvars elastic ansible_host: {{ hostvars['elastic']['ansible_host'] }}"
+
 - name: Install and enroll Elastic EDR Agent with Fleet
   win_shell: |
     cd "{{ elastic_install_location }}\\elastic-agent-{{ elastic_agent_version }}-windows-x86_64"
@@ -141,6 +147,42 @@
       - "  - Security: 1GB"
       - "  - System: 512MB"
       - "  - Application: 512MB"
+
+- name: Enable additional Windows audit policies for enhanced visibility
+  win_shell: |
+    # Enable advanced audit policies for maximum visibility
+    auditpol /set /category:"Account Logon" /success:enable /failure:enable
+    auditpol /set /category:"Account Management" /success:enable /failure:enable
+    auditpol /set /category:"Detailed Tracking" /success:enable /failure:enable
+    auditpol /set /category:"Logon/Logoff" /success:enable /failure:enable
+    auditpol /set /category:"Object Access" /success:enable /failure:enable
+    auditpol /set /category:"Policy Change" /success:enable /failure:enable
+    auditpol /set /category:"Privilege Use" /success:enable /failure:enable
+    auditpol /set /category:"System" /success:enable /failure:enable
+    
+    # Enable specific subcategories for detailed tracking
+    auditpol /set /subcategory:"Process Creation" /success:enable
+    auditpol /set /subcategory:"Process Termination" /success:enable
+    auditpol /set /subcategory:"File System" /success:enable /failure:enable
+    auditpol /set /subcategory:"Registry" /success:enable /failure:enable
+  register: audit_policy_config
+  failed_when: false
+
+- name: Enable Sysmon-style command line auditing
+  win_regedit:
+    path: HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\Audit
+    name: ProcessCreationIncludeCmdLine_Enabled
+    data: 1
+    type: dword
+  register: cmdline_audit
+
+- name: Configure Windows Defender for enhanced logging
+  win_shell: |
+    # Enable Windows Defender operational logs
+    wevtutil sl "Microsoft-Windows-Windows Defender/Operational" /e:true /ms:1073741824
+    wevtutil sl "Microsoft-Windows-Windows Defender/WHC" /e:true /ms:536870912
+  register: defender_logging
+  failed_when: false
 
 - name: Wait for agent service to be ready
   win_service:

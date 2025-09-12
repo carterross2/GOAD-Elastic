@@ -105,6 +105,37 @@
   retries: 10
   delay: 30
 
+- name: Install required Fleet packages for EDR
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/epm/packages/{{ item }}"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
+    body_format: json
+    body:
+      force: true
+  register: package_install_result
+  failed_when: false
+  retries: 3
+  delay: 30
+  loop:
+    - "endpoint"
+    - "windows" 
+    - "system"
+
+- name: Display package installation results
+  debug:
+    msg: 
+      - "Package {{ item.item }} installation: {{ 'SUCCESS' if item.status == 200 else 'FAILED' }}"
+      - "Status: {{ item.status | default('No response') }}"
+  loop: "{{ package_install_result.results }}"
+
+- name: Wait for packages to be fully installed
+  pause:
+    seconds: 30
+
 - name: Create Fleet Server host
   uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/fleet_server_hosts"
@@ -232,7 +263,7 @@
   register: endpoint_integration
   failed_when: false
 
-- name: Add Windows Event Logs integration to Windows EDR policy
+- name: Add comprehensive Windows integration to EDR policy
   uri:
     url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies"
     method: POST
@@ -242,7 +273,7 @@
       Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
     body_format: json
     body:
-      name: "windows-logs-policy"
+      name: "windows-comprehensive-logs"
       policy_id: "{{ windows_edr_policy_id }}"
       package:
         name: "windows"
@@ -258,6 +289,22 @@
               vars:
                 channel:
                   value: "Security"
+                preserve_original_event:
+                  value: true
+            - enabled: true
+              data_stream:
+                dataset: "windows.application"
+                type: "logs"
+              vars:
+                channel:
+                  value: "Application"
+            - enabled: true
+              data_stream:
+                dataset: "windows.system"
+                type: "logs"
+              vars:
+                channel:
+                  value: "System"
             - enabled: true
               data_stream:
                 dataset: "windows.powershell"
@@ -268,31 +315,127 @@
             - enabled: true
               data_stream:
                 dataset: "windows.powershell_operational"
-                type: "logs" 
+                type: "logs"
               vars:
                 channel:
                   value: "Microsoft-Windows-PowerShell/Operational"
             - enabled: true
               data_stream:
-                dataset: "windows.system"
+                dataset: "windows.forwarded"
+                type: "logs"
+              vars:
+                channel:
+                  value: "ForwardedEvents"
+        - type: "httpjson"
+          enabled: false
+        - type: "etw"
+          enabled: true
+          streams:
+            - enabled: true
+              data_stream:
+                dataset: "windows.etw"
+                type: "logs"
+  register: windows_comprehensive_integration
+  failed_when: false
+
+- name: Add System integration for Windows Event Logs
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/fleet/package_policies"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
+    body_format: json
+    body:
+      name: "system-logs-policy"
+      policy_id: "{{ windows_edr_policy_id }}"
+      package:
+        name: "system"
+        version: "latest"
+      inputs:
+        - type: "winlogs"
+          enabled: true
+          streams:
+            - enabled: true
+              data_stream:
+                dataset: "system.security"
+                type: "logs"
+              vars:
+                channel:
+                  value: "Security"
+                preserve_original_event:
+                  value: true
+            - enabled: true
+              data_stream:
+                dataset: "system.application"
+                type: "logs"
+              vars:
+                channel:
+                  value: "Application"
+            - enabled: true
+              data_stream:
+                dataset: "system.system"
                 type: "logs"
               vars:
                 channel:
                   value: "System"
-  register: windows_logs_integration
+        - type: "system/metrics"
+          enabled: true
+          streams:
+            - enabled: true
+              data_stream:
+                dataset: "system.cpu"
+                type: "metrics"
+            - enabled: true
+              data_stream:
+                dataset: "system.memory"
+                type: "metrics"
+            - enabled: true
+              data_stream:
+                dataset: "system.network"
+                type: "metrics"
+            - enabled: true
+              data_stream:
+                dataset: "system.filesystem"
+                type: "metrics"
+  register: system_integration
   failed_when: false
-
-- name: Display Windows Event Logs integration status
-  debug:
-    msg:
-      - "✓ Windows Event Logs integration added"
-      - "Collecting: Security, PowerShell, System logs"
-      - "This will increase data volume significantly"
-  when: windows_logs_integration.status == 200
 
 - name: Set Fleet Server policy ID
   set_fact:
     fleet_server_policy_id: "{{ fleet_server_policy.json.item.id if (fleet_server_policy.json.item is defined) else 'fleet-server-policy' }}"
+
+- name: Install and enable all available Elastic detection rules
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/detection_engine/rules/_bulk_action"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
+    body_format: json
+    body:
+      action: "enable"
+      query: "enabled:false"
+  register: enable_rules_result
+  failed_when: false
+  retries: 3
+  delay: 30
+
+- name: Load Elastic prebuilt detection rules
+  uri:
+    url: "http://localhost:{{ kibana_port }}/api/detection_engine/rules/prepackaged"
+    method: PUT
+    headers:
+      Content-Type: "application/json"
+      kbn-xsrf: true
+      Authorization: "Basic {{ ('elastic:' + elastic_password) | b64encode }}"
+    body_format: json
+    body: {}
+  register: prebuilt_rules_result
+  retries: 3
+  delay: 30
 
 # Generate Fleet Server service token
 - name: Generate Fleet Server service token
