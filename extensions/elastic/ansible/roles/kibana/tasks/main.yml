@@ -463,7 +463,7 @@
       TOKEN=$(curl -s -u elastic:elastic "http://localhost:9200/_security/service/elastic/fleet-server/credential/token" | jq -r '.tokens[0].token.value')
     fi
     
-    sudo ./elastic-agent install --fleet-server-es=http://localhost:9200 --fleet-server-service-token=$TOKEN --fleet-server-policy={{ fleet_server_policy_id }} --fleet-server-host=192.168.56.52 --force
+    sudo ./elastic-agent install --fleet-server-es=http://localhost:9200 --fleet-server-service-token=$TOKEN --fleet-server-policy={{ fleet_server_policy_id }} --force
   register: fleet_server_install
 
 - name: Wait for Fleet Server to be ready
